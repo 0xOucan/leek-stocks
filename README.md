@@ -35,6 +35,45 @@ The guardian should be a multisig, and the admin should not be the publisher.
 A single key that can freeze a feed is a censorship risk, and saying so is part
 of the design rather than a disclaimer.
 
+## Contracts
+
+| Contract | Does |
+|---|---|
+| `IndexOracle` | one index's price, as a Chainlink `AggregatorV3` feed: push-only, role-separated, bounded per round, pausable |
+| `ETFFactory` | `registerIndex` freezes a symbol's configuration; `deployETF(string name, string symbol)` deploys its share and vault |
+| `ETFShare` | the share token: ERC-20 with permit, mint and burn held only by its vault |
+| `IssuanceVault` | buy and redeem shares against MUSD at the oracle price, with fees, a cap, a backstop and a guardian |
+
+### Why `deployETF` takes two strings and nothing else
+
+LeekWallet draws a transaction on a 128x64 screen and refuses what it cannot
+draw. Its predecessor on Hedera failed that test: an issuance call carrying a
+seventeen-field struct came to 3,748 bytes against a 768-byte limit, and a
+screen reading "deploy equity, approve?" over 3.7 KB nobody can read is blind
+signing with better manners. So everything that does not vary — the settlement
+token, the feed, the fee, the cap, the three role holders — is frozen in
+registry state by `registerIndex`, and the only values in the calldata are the
+two a human actually decides.
+
+### What this is not
+
+**It is not solvent if the index rises.** A share is priced from an index the
+vault does not hold, so the MUSD paid in by buyers can be less than the MUSD
+owed to redeemers. The contract bounds that rather than hiding it: redemption
+**reverts** naming what is owed and what is available, total shares are
+**capped**, `reserves()` and `liabilities()` are public so the gap is visible
+before anyone commits, and anyone may `fund()` the backstop. It is a testnet
+demonstration of issuance, pricing and hardware-confirmed signing. It is not a
+fund, and nobody should put money in it. See
+[audit/AUDIT-REPORT.md](audit/AUDIT-REPORT.md), finding H-1.
+
+## Audit
+
+[audit/AUDIT-REPORT.md](audit/AUDIT-REPORT.md) applies the ethskills EVM audit
+checklists and lists eight findings with their status, including the two gates
+still open: `slither` is not installed, and the invariant and fork test suites
+are owed before deployment.
+
 ## Standards
 
 - The oracle implements **Chainlink's `AggregatorV3Interface`**, which needs

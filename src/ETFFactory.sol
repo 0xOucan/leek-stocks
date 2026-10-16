@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.28;
+
+import {AccessControl} from "openzeppelin-contracts/contracts/access/AccessControl.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {ETFShare} from "./ETFShare.sol";
+import {IssuanceVault} from "./IssuanceVault.sol";
+
+/**
+ * @title ETFFactory
+ * @notice Deploys one index's share token and issuance vault.
+ *
+ * @dev **`deployETF(string,string)` takes two strings and nothing else, and
+ *      that signature is a hard requirement rather than a style choice.**
+ *
+ *      LeekWallet draws a transaction on a 128x64 screen and refuses what it
+ *      cannot draw. Its predecessor on Hedera failed this test: an issuance
+ *      call carrying a seventeen-field struct came to 3,748 bytes against a
+ *      768-byte limit, and a screen reading "deploy equity, approve?" over
+ *      3.7 KB nobody can read is blind signing with better manners. The fix
+ *      there, and the design here, is to freeze everything that does not vary
+ *      in registry state, so the only values in the calldata are the two a
+ *      human actually decides: the name and the symbol.
+ *
+ *      Everything else - the settlement token, the price feed, the fee, the
+ *      cap, the roles - is set by an admin in `registerIndex` before anyone
+ *      deploys, and is visible on chain. Adding a parameter to `deployETF`
+ *      would break the wallet's ability to show the call honestly, which is
+ *      the whole point of the project it belongs to.
+ */
+contract ETFFactory is AccessControl {
+    struct IndexConfig {
+        AggregatorV3Interface oracle;
+        uint32 maxStaleness;
+        uint16 feeBps;
+        uint256 maxShares;
+        /// @dev Pause authority on the deployed vault. Should be a multisig.
+        address guardian;
+        /// @dev May withdraw accrued fees, and nothing else.
+        address treasurer;
+        bool registered;
+    }
+
+    /// @notice The settlement token for every index this factory deploys.
+    IERC20 public immutable musd;
+    /// @notice Administrator of every pair this factory deploys. Set once.
+    address public immutable admin;
+
+    /// @dev symbol hash => frozen configuration.
+    mapping(bytes32 symbolHash => IndexConfig) private _configs;
+    /// @dev symbol hash => the vault deployed for it, or zero.
+    mapping(bytes32 symbolHash => address vault) public vaultFor;
+    /// @notice Every vault this factory has deployed, in order.
+    address[] public vaults;
+
+    event IndexRegistered(
+        string symbol,
+        address oracle,
+        uint32 maxStaleness,
+        uint16 feeBps,
+        uint256 maxShares,
+        address guardian,
+        address treasurer
+    );
+    event IndexDeployed(string name, string symbol, address share, address vault);
+
+    error ZeroAddress();
+    error EmptyString();
+    error NotRegistered(string symbol);
+    error AlreadyDeployed(string symbol);
+    error AlreadyRegistered(string symbol);
+
+    constructor(IERC20 musd_, address admin_) {
+        if (address(musd_) == address(0) || admin_ == address(0)) revert ZeroAddress();
+        musd = musd_;
+        admin = admin_;
+        _grantRole(DEFAULT_ADMIN_ROLE, admin_);
+    }
+
+    /**
+     * @notice Freeze the configuration a symbol will be deployed with.
+     * @dev Write-once per symbol. A re-registration would change what a
+     *      pending `deployETF` means between the user reading it on a device
+     *      screen and the transaction landing, which is exactly the class of
+     *      surprise this design exists to remove.
+     */
+    function registerIndex(
+        string calldata symbol,
+        AggregatorV3Interface oracle,
+        uint32 maxStaleness,
+        uint16 feeBps,
+        uint256 maxShares,
+        address guardian,
+        address treasurer
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (bytes(symbol).length == 0) revert EmptyString();
+        if (address(oracle) == address(0)) revert ZeroAddress();
+        // Separate keys, named here rather than defaulted to the admin: one
+        // key that can pause a market and also move its fees is the
+        // centralisation the security checklist tells us to flag, and the
+        // registry is the right place to name three distinct holders because
+        // it keeps deployETF's calldata at two strings.
+        if (guardian == address(0) || treasurer == address(0)) revert ZeroAddress();
+        bytes32 key = keccak256(bytes(symbol));
+        if (_configs[key].registered) revert AlreadyRegistered(symbol);
+
+        _configs[key] = IndexConfig({
+            oracle: oracle,
+            maxStaleness: maxStaleness,
+            feeBps: feeBps,
+            maxShares: maxShares,
+            guardian: guardian,
+            treasurer: treasurer,
+            registered: true
+        });
+        emit IndexRegistered(symbol, address(oracle), maxStaleness, feeBps, maxShares, guardian, treasurer);
+    }
+
+    /**
+     * @notice Deploy the share token and vault for a registered symbol.
+     * @dev Permissionless on purpose: the configuration is already frozen, so
+     *      there is nothing for a caller to choose and nothing to gate. The
+     *      roles on the deployed pair go to this factory's admin, not to the
+     *      caller.
+     */
+    function deployETF(string calldata name, string calldata symbol)
+        external
+        returns (address shareAddress, address vaultAddress)
+    {
+        if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
+        bytes32 key = keccak256(bytes(symbol));
+        IndexConfig memory config = _configs[key];
+        if (!config.registered) revert NotRegistered(symbol);
+        if (vaultFor[key] != address(0)) revert AlreadyDeployed(symbol);
+
+        IssuanceVault vault = new IssuanceVault(
+            musd,
+            config.oracle,
+            config.maxStaleness,
+            config.feeBps,
+            config.maxShares,
+            address(this), // admin for one call: setShare, then handed over
+            config.guardian,
+            config.treasurer
+        );
+        ETFShare shareToken = new ETFShare(name, symbol, admin, address(vault));
+
+        vault.setShare(shareToken);
+        // Hand administration to the configured admin and step out of the way,
+        // so the factory keeps no standing power over what it deployed.
+        vault.grantRole(vault.DEFAULT_ADMIN_ROLE(), admin);
+        vault.renounceRole(vault.DEFAULT_ADMIN_ROLE(), address(this));
+
+        vaultFor[key] = address(vault);
+        vaults.push(address(vault));
+
+        emit IndexDeployed(name, symbol, address(shareToken), address(vault));
+        return (address(shareToken), address(vault));
+    }
+
+    function configFor(string calldata symbol) external view returns (IndexConfig memory) {
+        return _configs[keccak256(bytes(symbol))];
+    }
+
+    function vaultCount() external view returns (uint256) {
+        return vaults.length;
+    }
+
+}
