@@ -442,7 +442,15 @@ async function sendAndWait(hash: `0x${string}`): Promise<void> {
     // A mined-but-reverted transaction carries no revert reason in the
     // receipt, so the only honest message names the hash and lets the user
     // read it on the explorer.
-    throw new Error(`The transaction was mined but reverted. See ${explorerTxUrl(hash)}`);
+    /* The hash either way: it is the one thing that lets anyone else look
+       this up, and on a chain with no explorer a bare hash is honest where a
+       dead link is not. */
+    const link = explorerTxUrl(hash);
+    throw new Error(
+      link
+        ? `The transaction was mined but reverted. See ${link}`
+        : `The transaction was mined but reverted. Hash ${hash}`,
+    );
   }
 }
 
