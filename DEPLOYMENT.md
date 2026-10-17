@@ -256,10 +256,28 @@ branch**, not just the tip:
 
 ```sh
 # [LOCAL] the whole history, not the working tree
-git log --all --name-only -- '*.env'                    # which .env files were ever committed
-git grep -nIE '0x[0-9a-fA-F]{64}' $(git rev-list --all) # private-key shaped strings
-git grep -nIiE '(PASSWORD|SECRET|TOKEN|KEY)=["'"'"']?[A-Za-z0-9+/_-]{12,}' $(git rev-list --all)
+git log --all --name-only -- '*.env'        # which .env files were ever committed
+
+# Key-shaped strings in every commit. Looped, NOT
+# `git grep ... $(git rev-list --all)`: past a few dozen commits that form
+# exceeds the argument limit and the command prints NOTHING AT ALL, which
+# reads exactly like a clean result. It did, here, at 67 commits - after
+# having worked at 60. An audit that fails silently is worse than no audit.
+git rev-list --all | while read c; do
+  git grep -hoE '0x[0-9a-fA-F]{64}' "$c" -- . 2>/dev/null
+done | sort -u
+
+git rev-list --all | while read c; do
+  git grep -hoIiE '(PASSWORD|SECRET|TOKEN|PRIVATE_KEY)=["'"'"']?[A-Za-z0-9+/_-]{12,}' "$c" -- . 2>/dev/null
+done | sort -u
 ```
+
+Sanity-check any "clean" result before believing it: `git grep -nE
+'0x[0-9a-fA-F]{64}' HEAD -- .` must find the two known strings below. If it
+finds nothing, the command is broken, not the history.
+
+**Result on 2026-10-17 at `72de950`, 67 commits, all branches:** exactly two
+64-hex strings exist in the entire history, both below. Nothing else.
 
 What it found, and why each is fine:
 
