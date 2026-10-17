@@ -110,6 +110,29 @@ is visible in `ps` to every user on the machine and lands in shell history, so
 every invocation here uses `--account` and types the password into a prompt.
 The guide is right about the toolchain and wrong about that one habit.
 
+### Mezo is Cosmos underneath, and it changes how a deploy must be sent
+
+`mezod` is a fork of Evmos, so Mezo is an EVM on top of Cosmos. One
+consequence breaks a normal Foundry deployment and is worth knowing before it
+costs an afternoon:
+
+**Transactions must be sent one at a time.** Foundry's broadcast pipelines by
+default — it signs several transactions with consecutive nonces and sends them
+together, which an Ethereum mempool queues by nonce. Cosmos checks the account
+*sequence* when a transaction arrives, so one that turns up with sequence 1
+while the account sits at 0 is **rejected**, not queued:
+
+```
+error code -32000: invalid nonce; got 1, expected 0: invalid sequence
+```
+
+`--slow` is the fix, and `scripts/deploy-mezo.sh` passes it. The first attempt
+here was made without it: one contract landed, the rest were refused, and the
+addresses printed in that run's log were simulation's predictions rather than
+anything that exists. **Record addresses only from a log that completed.** An
+orphaned contract from a failed attempt is harmless — gas on Mezo is measured
+in hundreds of wei — but a recorded address that holds no contract is not.
+
 ## 2. Cloudflare
 
 Per `docs/cloudflare.md`, the origin is one VPS IPv4 and the zone is
