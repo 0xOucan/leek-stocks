@@ -19,6 +19,7 @@ import { formatAge, formatAmount, formatIndexValue, parseAmount, truncateAddress
 import { applySlippage, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
 import { claimAvailability, freshness } from "./lib/staleness.ts";
 import { faucetAllowedOnChain, readFaucetToken, FAUCET_ABI, type FaucetToken } from "./faucet.ts";
+import { allowanceFor } from "./allowance.ts";
 import { readBalances, readMarket, readVaultPrice, type Balances, type MarketState } from "./market.ts";
 import {
   actionButton,
@@ -107,9 +108,18 @@ type Step = "connect" | "switch" | "approve" | "execute";
 function nextStep(): Step {
   if (!state.connection) return "connect";
   if (!onRightChain()) return "switch";
-  if (state.mode === "buy") {
-    const { value } = parsedAmount();
-    if (value !== null && (state.balances?.allowance ?? 0n) < value) return "approve";
+  const { value } = parsedAmount();
+  if (value !== null) {
+    /* Each mode spends a different token, so each needs its own allowance.
+       `buy` pulls MUSD from the buyer. `redeem` calls burnFrom on the SHARE
+       token, and ETFShare spends an allowance there on purpose so the vault
+       cannot burn a holder's shares uninvited - see its burnFrom.
+       This only checked the MUSD allowance, and only in buy mode, so every
+       first redeem went straight to execute and reverted with
+       ERC20InsufficientAllowance(vault, 0, shares). A comment further down
+       described a separate share-approval button as though it existed; it did
+       not. */
+    if (allowanceFor(state.mode, state.balances) < value) return "approve";
   }
   return "execute";
 }
@@ -690,8 +700,14 @@ function renderTrade(): void {
         },
       });
     } else if (step === "approve") {
+      // Buying spends MUSD; redeeming spends shares, which the vault burns
+      // through burnFrom. Approving the wrong one leaves the real allowance at
+      // zero and the action reverts, so the token is chosen from the mode
+      // rather than hard-coded to MUSD.
+      const spending = state.mode === "buy" ? musd : (market.share as Address);
+      const spendingLabel = state.mode === "buy" ? "MUSD" : `${market.symbol} shares`;
       primary = actionButton({
-        label: `Approve ${formatAmount(amount ?? 0n, MUSD_DECIMALS, 4)} MUSD`,
+        label: `Approve ${formatAmount(amount ?? 0n, MUSD_DECIMALS, 4)} ${spendingLabel}`,
         pendingLabel: "Approving…",
         onClick: async () => {
           if (!connection || amount === null) return;
@@ -704,7 +720,7 @@ function renderTrade(): void {
             // benefit. The cost is one approval per buy, which is the trade
             // the audit's "no infinite approvals" row asks for.
             const hash = await writeContract(wallet, {
-              address: musd,
+              address: spending,
               abi: ERC20_ABI,
               functionName: "approve",
               args: [vault, amount],
@@ -774,9 +790,11 @@ function renderTrade(): void {
       primary.setBlocked(disabledReason);
     }
 
-    // Redeeming needs an allowance on the share token, which the vault pulls
-    // in `burnFrom`. It is a separate approval with its own button, so a
-    // pending share approval never greys out the MUSD one.
+    // Redeeming needs an allowance on the share token, which the vault spends
+    // in `burnFrom`. It is the same single-primary-action flow as buying -
+    // nextStep() picks the token from the mode - rather than a second button:
+    // two approvals on screen at once is what the step machine above exists to
+    // avoid.
     actionRow.append(primary.element);
 
     if (state.approveMessage) {

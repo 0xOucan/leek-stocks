@@ -146,6 +146,7 @@ of them puts a key or a password on a command line.
 | `sweep-publisher.sh` | sends all but a gas float from the publisher back to the deployer |
 | `feed-env.sh` | writes `feed/.env` with the publisher's key taken out of the keystore and never shown |
 | `borrow-musd.sh` | opens a trove on Mezo's native borrow system, so there is MUSD to buy shares with |
+| `fund-backstop.sh` | donates MUSD to a vault's reserves to cover the H-1 shortfall, so every share can be redeemed |
 
 ## What Mezo does differently, and what it cost to find out
 

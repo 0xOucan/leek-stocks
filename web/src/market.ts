@@ -33,7 +33,18 @@ export interface MarketState {
 export interface Balances {
   readonly musd: bigint;
   readonly shares: bigint;
+  /** MUSD the vault may pull, for `buy`. */
   readonly allowance: bigint;
+  /**
+   * Shares the vault may burn, for `redeem`.
+   *
+   * `redeem` calls `burnFrom(msg.sender, shares)` on the share token, and
+   * ETFShare deliberately spends an allowance there so the vault cannot burn a
+   * holder's shares without permission. So redeeming needs its own approval on
+   * a different token from buying, and reading only the MUSD allowance made
+   * every first redeem revert with ERC20InsufficientAllowance.
+   */
+  readonly shareAllowance: bigint;
   readonly native: bigint;
 }
 
@@ -93,11 +104,14 @@ export async function readBalances(
   share: Address,
   vault: Address,
 ): Promise<Balances> {
-  const [musdBalance, shareBalance, allowance, native] = await Promise.all([
+  const [musdBalance, shareBalance, allowance, shareAllowance, native] = await Promise.all([
     orNull(readContract(publicClient, { address: musd, abi: ERC20_ABI, functionName: "balanceOf", args: [owner] })),
     orNull(readContract(publicClient, { address: share, abi: ERC20_ABI, functionName: "balanceOf", args: [owner] })),
     orNull(
       readContract(publicClient, { address: musd, abi: ERC20_ABI, functionName: "allowance", args: [owner, vault] }),
+    ),
+    orNull(
+      readContract(publicClient, { address: share, abi: ERC20_ABI, functionName: "allowance", args: [owner, vault] }),
     ),
     orNull(getBalance(publicClient, { address: owner })),
   ]);
@@ -105,6 +119,7 @@ export async function readBalances(
     musd: musdBalance ?? 0n,
     shares: shareBalance ?? 0n,
     allowance: allowance ?? 0n,
+    shareAllowance: shareAllowance ?? 0n,
     native: native ?? 0n,
   };
 }
@@ -122,3 +137,4 @@ export async function readBalances(
 export async function readVaultPrice(vault: Address): Promise<bigint | null> {
   return orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "price" }));
 }
+
