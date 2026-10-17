@@ -181,9 +181,17 @@ export function notice(kind: "error" | "warning" | "ok", text: string, name?: st
 }
 
 /** A labelled figure. The value is mono so two of them line up digit for digit. */
-export function stat(label: string, value: string, extra?: string): HTMLElement {
-  return el("div", { class: "stat" }, [
+/**
+ * @param extra the full-precision value, as a tooltip on the rounded one.
+ * @param sub a second line under the value - what it is worth, or why it has
+ *        no worth to show. A figure in index points or in a token nobody
+ *        prices in their head is not yet information.
+ */
+export function stat(label: string, value: string, extra?: string, sub?: string): HTMLElement {
+  const children = [
     el("span", { class: "stat-label" }, [label]),
     el("span", { class: "stat-value mono", title: extra }, [value]),
-  ]);
+  ];
+  if (sub !== undefined) children.push(el("span", { class: "stat-sub muted small" }, [sub]));
+  return el("div", { class: "stat" }, children);
 }

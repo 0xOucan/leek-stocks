@@ -145,13 +145,30 @@ export function mount(): void {
            Leeknding, which is written and tested but not deployed. Naming it
            here as coming rather than as a tab is the honest version: a tab
            implies something to click. */
-        el("p", { class: "tagline" }, ["Parody index tokens, settled in MUSD \u00b7 part of LeekDefi"]),
+        /* "Parody" is gone from every visible string.
+           It was accurate and it was the wrong word on a trading screen: a
+           tester who reads "parody" in the first line treats the numbers as a
+           joke and stops checking whether they are right. The behaviour is
+           not a joke - a real oracle, a real fee, a real reserve check, real
+           settlement - and that is what the line should say. The index names
+           (GOLOGGLE, AMEZON) are invented on purpose and belong to no company,
+           which is the thing "parody" was doing and the disclaimer below now
+           does explicitly instead. */
+        el("p", { class: "tagline" }, ["Synthetic index exposure, cash-settled in MUSD \u00b7 part of LeekDefi"]),
         el("p", { class: "muted small" }, [
           /* The chain comes from the chain, not from this sentence. On a
              rehearsal chain the settlement token is a mock and saying "on
              Mezo testnet" was the last place the page still asserted where it
              was running. The disclaimers after it are true everywhere. */
-          `Parody index tokens, settled in MUSD on ${mezoTestnet.name}. Not securities, not backed by anything.`,
+          `Prices track an index, settlement is in MUSD, and the vault's cover is on screen. Running on ${mezoTestnet.name}.`,
+        ]),
+        /* The honest small print, kept small and kept precise.
+           It has to say these are not equities - they are not, and claiming
+           otherwise would be a lie with a regulator attached. It does not have
+           to apologise for itself. The indices are invented names, not
+           tickers, and nothing here is a claim on a company. */
+        el("p", { class: "muted small" }, [
+          "Not securities and not shares in any company: GOLOGGLE and AMEZON are invented index names. Testnet only.",
         ]),
       ]),
       sections.wallet,
@@ -193,12 +210,24 @@ export function mount(): void {
     renderIndices();
     renderTrade();
   });
-  // Chain reads are slower and change less often than the feed, so they run
-  // on their own, longer chain rather than inside the five-second loop.
+  /* Chain reads every 5 seconds, not every 15.
+     Fifteen seconds was chosen because chain reads are slower than the feed
+     and Mezo publishes exactly one testnet RPC, with no second provider to
+     fall back to - so polling it hard is a real cost, not a theoretical one.
+     It was still too slow. Reserves changed out of band (a backstop top-up
+     sent from a script) and for the next fifteen seconds the page refused a
+     redemption that the chain would have accepted, quoting a reserve figure
+     the chain had already moved past. A blocking warning computed from stale
+     state is worse than a slow number: the reader believes it and stops.
+     Five seconds matches the feed loop and the 2-5s that the frontend
+     guidance asks for. These are eight small eth_call reads on a chain whose
+     base fee is measured in hundreds of wei; if the single operator ever
+     becomes the binding constraint, the answer is a private node in
+     VITE_RPC_URL, which exists for this. */
   const chainLoop = (): void => {
     window.setTimeout(() => {
       void refreshChain().finally(chainLoop);
-    }, 15_000);
+    }, 5_000);
   };
   chainLoop();
 }
@@ -922,6 +951,21 @@ function renderFaucet(): void {
   }
 }
 
+/**
+ * What a share balance is worth, in MUSD, at the price now on chain.
+ *
+ * Returns undefined rather than a zero when there is no usable price: an
+ * index whose oracle is stale or reverting has no value to state, and
+ * printing "$0.00" for it would be a number where there is none.
+ */
+function sharesWorth(shares: bigint | null): string | undefined {
+  if (shares === null) return undefined;
+  const price = state.market?.price ?? null;
+  if (price === null) return undefined;
+  const musd = (shares * price) / 10n ** BigInt(SHARE_DECIMALS);
+  return `≈ ${formatAmount(musd, MUSD_DECIMALS, 2)} MUSD`;
+}
+
 /* ---------------------------------------------------------------- position */
 
 function renderPosition(): void {
@@ -939,24 +983,51 @@ function renderPosition(): void {
 
   sections.position.append(
     el("div", { class: "stats" }, [
+      /* Every figure says what it is worth, because a share count is in index
+         points and nobody values those in their head. The share line is the
+         one that needs it most: 1.4974 shares means nothing, $149.31 does. */
       stat(
         `${market.symbol} shares`,
         balances ? formatAmount(balances.shares, SHARE_DECIMALS, 6) : "—",
         balances ? formatUnits(balances.shares, SHARE_DECIMALS) : undefined,
+        sharesWorth(balances?.shares ?? null),
       ),
       stat(
         "MUSD",
         balances ? formatAmount(balances.musd, MUSD_DECIMALS, 4) : "—",
         balances ? formatUnits(balances.musd, MUSD_DECIMALS) : undefined,
+        /* MUSD is dollar-denominated, so its own figure is the dollar figure.
+           Said once, as parity rather than as a fact: MUSD is a borrowed
+           stablecoin and nothing on this page guarantees it trades at a
+           dollar. */
+        balances ? "dollar-denominated, at $1.00 parity" : undefined,
       ),
       stat(
         `${symbol} (gas)`,
         balances ? formatAmount(balances.native, mezoTestnet.nativeCurrency.decimals, 8) : "—",
         balances ? formatUnits(balances.native, mezoTestnet.nativeCurrency.decimals) : undefined,
+        /* No dollar value for gas, on purpose. Mezo's testnet price feed
+           reports BTC at about $20,000,000, so a converted figure here would
+           read as thousands of dollars of gas and be pure fiction. Naming it
+           as testnet gas is the true statement available. */
+        "testnet gas, not priced",
+      ),
+      /* Both allowances, not just the MUSD one.
+         Buying spends MUSD and redeeming spends shares, and the page showed
+         only the first - so a reader looking for why a redeem failed saw a
+         healthy allowance and no hint that a different token was the one
+         standing at zero. */
+      stat(
+        "MUSD approved",
+        balances ? `${formatAmount(balances.allowance, MUSD_DECIMALS, 4)} MUSD` : "—",
+        undefined,
+        "spent by buying",
       ),
       stat(
-        "Approved to vault",
-        balances ? `${formatAmount(balances.allowance, MUSD_DECIMALS, 4)} MUSD` : "—",
+        "Shares approved",
+        balances ? formatAmount(balances.shareAllowance, SHARE_DECIMALS, 4) : "—",
+        balances ? formatUnits(balances.shareAllowance, SHARE_DECIMALS) : undefined,
+        "burned by redeeming",
       ),
     ]),
     el("div", { class: "card-foot" }, [

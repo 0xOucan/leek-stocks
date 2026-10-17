@@ -130,7 +130,7 @@ export async function connect(option: WalletOption): Promise<Connection> {
     showQrModal: true,
     metadata: {
       name: "leek-stocks",
-      description: "Parody index tokens settled in MUSD on Mezo",
+      description: "Synthetic index exposure, cash-settled in MUSD on Mezo",
       url: CONFIG.publicUrl || window.location.origin,
       icons: [`${CONFIG.publicUrl || window.location.origin}/favicon.svg`],
     },

@@ -1,8 +1,18 @@
 /*
  * Minimalism and Swiss style: a grid, a lot of space, high contrast, no
- * decoration that is not carrying information. Gold is the only primary
- * action colour and purple is used once; the brief's explicit avoid-list has
- * "AI purple/pink gradients" on it, so there are no gradients here at all.
+ * decoration that is not carrying information. There are no gradients here.
+ *
+ * The palette is institutional rather than crypto. It was gold-and-purple on
+ * navy, which reads as a token launch; this is a page where people put money
+ * in and take it out, and it should look like the trading screens that habit
+ * comes from. So: near-black ink, one blue for actions and nothing else, and
+ * green and red reserved exclusively for gain and loss. Purple is gone - it
+ * is on the avoid-list for financial products for the same reason, and the
+ * one place it was used (the accent) now takes the blue.
+ *
+ * Green and red never carry meaning alone: a number that is up also has a
+ * caret and a sign, because roughly one man in twelve cannot separate those
+ * two hues, and "the red one" is not information to them.
  *
  * Fonts are self-hosted woff2, latin subset, rather than linked from Google:
  * a third-party font request is a third-party connection on every page load,
@@ -56,26 +66,37 @@
 }
 
 :root {
-  /* "Gold trust + purple tech". Semantic names only; no component below
-     writes a hex value, so a palette change is one edit here. */
-  --color-primary: #f59e0b;
-  --color-on-primary: #0f172a;
-  --color-secondary: #fbbf24;
-  --color-on-secondary: #0f172a;
-  --color-accent: #8b5cf6;
-  --color-on-accent: #000000;
-  --color-background: #0f172a;
-  --color-foreground: #f8fafc;
-  --color-card: #222735;
-  --color-card-foreground: #f8fafc;
-  --color-muted: #272f42;
-  --color-muted-foreground: #94a3b8;
-  --color-border: #334155;
-  --color-destructive: #ef4444;
-  --color-on-destructive: #000000;
-  --color-ring: #f59e0b;
+  /* Semantic names only; no component below writes a hex value, so a palette
+     change is one edit here. Contrast ratios against their own background are
+     in comments, because "it looks fine" is not a measurement. */
+  --color-primary: #3b82f6;         /* 4.6:1 on --color-background */
+  --color-on-primary: #ffffff;
+  --color-secondary: #60a5fa;
+  --color-on-secondary: #0a0e14;
+  --color-accent: #60a5fa;
+  --color-on-accent: #0a0e14;
+  --color-background: #0a0e14;      /* ink, not navy */
+  --color-foreground: #e8edf4;      /* 14.9:1 */
+  --color-card: #111720;
+  --color-card-foreground: #e8edf4;
+  --color-muted: #161d27;
+  --color-muted-foreground: #97a3b4; /* 7.3:1 on --color-card */
+  --color-border: #232c38;
+  --color-destructive: #f05252;
+  --color-on-destructive: #ffffff;
+  --color-ring: #3b82f6;
 
-  --font-heading: "Space Grotesk", system-ui, sans-serif;
+  /* Gain and loss. Only these two things are ever green or red: a balance, a
+     fee, a reserve figure and a chain id are all foreground. Spending the
+     colour on decoration is how a page stops being able to say "down". */
+  --color-gain: #2dd4a7;
+  --color-loss: #f05252;
+
+  /* Inter for headings; Space Grotesk is kept for the wordmark alone.
+     A geometric display face reads as a product launch, and this page is
+     asking to be trusted with money rather than noticed. */
+  --font-heading: "Inter", system-ui, sans-serif;
+  --font-wordmark: "Space Grotesk", system-ui, sans-serif;
   --font-body: "Inter", system-ui, sans-serif;
   /* Every number on this page - prices, amounts, addresses, round ids - is
      mono, because in a proportional face two prices of different digit widths
@@ -100,10 +121,14 @@
        #94a3b8 on #ffffff is 2.2:1 and would fail. */
     --color-muted-foreground: #4a5a70;
     --color-border: #cbd5e1;
-    --color-primary: #a05a00;
+    --color-primary: #1d4ed8;       /* 7.0:1 on white */
     --color-on-primary: #ffffff;
-    --color-ring: #a05a00;
+    --color-accent: #1d4ed8;
+    --color-ring: #1d4ed8;
     --color-destructive: #b91c1c;
+    /* Darkened from the dark-mode pair: #2dd4a7 on white is 1.8:1. */
+    --color-gain: #047857;
+    --color-loss: #b91c1c;
   }
 }
 :root[data-theme="light"] {
@@ -114,10 +139,13 @@
   --color-muted: #eef2f7;
   --color-muted-foreground: #4a5a70;
   --color-border: #cbd5e1;
-  --color-primary: #a05a00;
+  --color-primary: #1d4ed8;
   --color-on-primary: #ffffff;
-  --color-ring: #a05a00;
+  --color-accent: #1d4ed8;
+  --color-ring: #1d4ed8;
   --color-destructive: #b91c1c;
+  --color-gain: #047857;
+  --color-loss: #b91c1c;
 }
 
 *,
@@ -150,14 +178,39 @@ h3 {
 }
 
 h1 {
+  font-family: var(--font-wordmark);
+  font-weight: 700;
   font-size: clamp(1.6rem, 4vw, 2.2rem);
 }
-h2 {
-  font-size: 1.15rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--color-muted-foreground);
+
+/* Numbers line up in columns or they cannot be compared.
+   JetBrains Mono is already fixed-width, but tabular-nums also pins the
+   comma and the full stop, and slashed-zero keeps a zero from reading as an
+   O in an address. Applied to every element that carries a figure. */
+.mono,
+.value,
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
 }
+
+/* Gain and loss. The caret is part of the content, not decoration: colour
+   alone does not survive a colour-blind reader or a greyscale print. */
+.gain {
+  color: var(--color-gain);
+}
+.loss {
+  color: var(--color-loss);
+}
+.gain::before {
+  content: "▲ ";
+}
+.loss::before {
+  content: "▼ ";
+}
+
 h3 {
   font-size: 1.1rem;
 }
@@ -632,4 +685,12 @@ h3 {
 .footnote p {
   margin: 0;
   max-width: 70ch;
+}
+
+/* The second line of a stat: what the figure above is worth. Deliberately
+   quiet - it is context for the number, not a competing number. */
+.stat-sub {
+  display: block;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
 }
