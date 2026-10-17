@@ -10,15 +10,42 @@
 import { createClient, defineChain, http, type Client } from "viem";
 import { CONFIG } from "./config.ts";
 
+/**
+ * The chain's name and gas token, resolved from its id.
+ *
+ * Both used to be the Mezo testnet's, hardcoded, while the id came from
+ * configuration — so a local rehearsal on chain 31337 showed the badge "Mezo
+ * Testnet" and labelled its balance "BTC (gas)". Anvil charges ether and is
+ * not Mezo, so the one screen whose job is to say which chain and which asset
+ * was saying both wrongly. A label nobody can trust on a test chain is a
+ * label nobody should trust on a real one.
+ */
+function chainIdentity(id: number): { name: string; currency: { name: string; symbol: string; decimals: 18 } } {
+  if (id === 31_611) {
+    return { name: "Mezo Testnet", currency: { name: "Test Bitcoin", symbol: "BTC", decimals: 18 } };
+  }
+  if (id === 31_612) {
+    return { name: "Mezo", currency: { name: "Bitcoin", symbol: "BTC", decimals: 18 } };
+  }
+  /* A rehearsal chain: named by its number, and its gas called ether, which
+     is what anvil and every fork of a mainnet actually charge. */
+  return { name: `Chain ${id}`, currency: { name: "Ether", symbol: "ETH", decimals: 18 } };
+}
+
+const IDENTITY = chainIdentity(CONFIG.chainId);
+
 export const mezoTestnet = defineChain({
   id: CONFIG.chainId,
-  name: "Mezo Testnet",
-  /* BTC, because Mezo charges gas in bitcoin rather than ether. A rehearsal
-     chain charges its own unit, but nothing here spends gas beyond fees and
-     the label is only ever shown next to a Mezo balance. */
-  nativeCurrency: { name: "Test Bitcoin", symbol: "BTC", decimals: 18 },
+  name: IDENTITY.name,
+  // BTC on Mezo, ether on a rehearsal chain. See chainIdentity above.
+  nativeCurrency: IDENTITY.currency,
   rpcUrls: { default: { http: [CONFIG.rpcUrl] } },
-  blockExplorers: { default: { name: "Mezo Explorer", url: "https://explorer.test.mezo.org" } },
+  blockExplorers: {
+    default: {
+      name: CONFIG.chainId === 31_612 ? "Mezo Explorer" : "Mezo Testnet Explorer",
+      url: CONFIG.chainId === 31_612 ? "https://explorer.mezo.org" : "https://explorer.test.mezo.org",
+    },
+  },
   testnet: true,
 });
 

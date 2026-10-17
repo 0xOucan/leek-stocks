@@ -108,3 +108,17 @@ export async function readBalances(
     native: native ?? 0n,
   };
 }
+
+/**
+ * Just the on-chain price of one vault.
+ *
+ * Every index's card compares the feed's number with what is actually on
+ * chain, which is the only way to see a feed that has stopped publishing. The
+ * full `readMarket` ran for the selected index alone, so every other card
+ * showed "—" under "On chain" — indistinguishable from a vault whose price
+ * call reverts. One extra read per index per poll is cheaper than a field
+ * nobody can trust.
+ */
+export async function readVaultPrice(vault: Address): Promise<bigint | null> {
+  return orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "price" }));
+}
