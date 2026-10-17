@@ -129,10 +129,46 @@ Nothing is deployed yet. When it is, `script/DeployMezoTestnet.s.sol` prints
 every address; record them here with the date and the explorer link, and
 verify the sources on the explorer the same day.
 
-| Contract | Network | Address | Verified |
+**Deployed to Mezo testnet (31611) on 2026-10-17**, settling in the
+**borrowable** MUSD (`0xf9BBcC…`), from `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45`.
+
+| Contract | Address | Explorer verification | Bytecode |
 |---|---|---|---|
-| `IndexOracle` GOLOGGLE | Mezo testnet | — | — |
-| `IndexOracle` AMEZON | Mezo testnet | — | — |
-| `ETFFactory` | Mezo testnet | — | — |
-| `ETFShare` / `IssuanceVault` GOLOGGLE | Mezo testnet | — | — |
-| `ETFShare` / `IssuanceVault` AMEZON | Mezo testnet | — | — |
+| `ETFFactory` | `0xCdF824BF8ed17285e40DB081131Cb3e7eC92b084` | **verified** | matches |
+| `IndexOracle` GOLOGGLE | `0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6` | **verified** | matches |
+| `IndexOracle` AMEZON | `0x5Ed8205bA3DC7075099cFC4b2D4b7f2fF8a9cf9D` | **verified** | matches |
+| `IssuanceVault` GOLOGGLE | `0x68A86E4503FCA82ac9eB229Be655E355A019bcC3` | not indexed | matches |
+| `ETFShare` GOLOGGLE | `0x35e0c3df250a1ea46bde6eef2D6ad22C924FCB88` | not indexed | matches |
+| `IssuanceVault` AMEZON | `0x87c6925798769012085b9a71FabA87c31F894f18` | not indexed | matches |
+| `ETFShare` AMEZON | `0x239cC4EB08B92fdB486F00C93E2D47b38c0EBAd4` | not indexed | matches |
+
+Live state when recorded: GOLOGGLE oracle at round 1, answer `2e10` (200.00000000
+at 8 decimals); its vault prices a share at `200e18`; `feeBps` 50,
+`reserveShareBps` 5000, `coverageBps` 10000, reserves 0 because nobody has
+bought yet. `musd()` on both vaults returns `0xf9BBcC…`.
+
+### Why four of them are "not indexed" rather than verified
+
+Mezo's testnet explorer **never indexed the contracts the factory deployed**.
+Its API answers `is_contract: false` for all four, with no creation
+transaction, although `eth_getCode` returns their code. Blockscout therefore
+has nothing to match a submission against, and `forge verify-contract` returns
+`Fail - Unable to verify` for exactly those four while succeeding for the
+three deployed directly from the account. An indexer limitation, not a
+property of the contracts.
+
+**So they are verified against the source instead of against the explorer:**
+
+```sh
+./scripts/verify-bytecode.sh
+```
+
+It compares each deployed runtime bytecode with a local `forge build`, masking
+the immutable regions the compiler reports — solc writes immutable *values*
+into runtime code, which is why two vaults from identical source differ in
+exactly those bytes and a naive comparison fails at identical lengths. All
+seven match, every unmasked byte. Anyone can reproduce it from this repository
+with no key and no explorer.
+
+Retry the explorer verification later if the indexer catches up; nothing is
+lost by it staying unindexed, except convenience.
