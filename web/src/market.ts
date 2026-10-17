@@ -23,6 +23,10 @@ export interface MarketState {
   readonly reserves: bigint;
   readonly liabilities: bigint | null;
   readonly feeBps: number;
+  /** Share of each fee that stays in reserves, in basis points. */
+  readonly reserveShareBps: number;
+  /** MUSD taken as protocol revenue to date, excluded from reserves. */
+  readonly feesAccrued: bigint;
   readonly maxShares: bigint;
   readonly paused: boolean;
   readonly maxStaleness: number;
@@ -60,13 +64,26 @@ export async function readMarket(market: MarketConfig): Promise<MarketState | nu
   const vault = market.vault;
   if (!vault) return null;
 
-  const [price, reserves, liabilities, feeBps, maxShares, paused, maxStaleness, oracle] = await Promise.all([
+  const [
+    price,
+    reserves,
+    liabilities,
+    feeBps,
+    reserveShareBps,
+    feesAccrued,
+    maxShares,
+    paused,
+    maxStaleness,
+    oracle,
+  ] = await Promise.all([
     readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "price" })
       .then((value) => ({ value, error: null as string | null }))
       .catch((error: unknown) => ({ value: null, error: describeError(error).message })),
     orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "reserves" })),
     orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "liabilities" })),
     orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "feeBps" })),
+    orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "reserveShareBps" })),
+    orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "feesAccrued" })),
     orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "maxShares" })),
     orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "paused" })),
     orNull(readContract(publicClient, { address: vault, abi: VAULT_ABI, functionName: "maxStaleness" })),
@@ -90,6 +107,8 @@ export async function readMarket(market: MarketConfig): Promise<MarketState | nu
     // is unknown would understate exactly the risk this page must surface.
     liabilities,
     feeBps: Number(feeBps ?? 0),
+    reserveShareBps: Number(reserveShareBps ?? 0),
+    feesAccrued: feesAccrued ?? 0n,
     maxShares: maxShares ?? 0n,
     paused: paused ?? false,
     maxStaleness: Number(maxStaleness ?? 3600),

@@ -16,7 +16,7 @@ import { CONFIG, MARKETS, anyMarketDeployed, type MarketConfig } from "./config.
 import { pollFeed, type FeedSnapshot, type IndexStatus } from "./feed.ts";
 import { describeError } from "./lib/errors.ts";
 import { formatAge, formatAmount, formatIndexValue, parseAmount, truncateAddress } from "./lib/format.ts";
-import { applySlippage, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
+import { applySlippage, feeView, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
 import { claimAvailability, freshness } from "./lib/staleness.ts";
 import { faucetAllowedOnChain, readFaucetToken, FAUCET_ABI, type FaucetToken } from "./faucet.ts";
 import { allowanceFor } from "./allowance.ts";
@@ -944,6 +944,66 @@ async function sendAndWait(hash: `0x${string}`): Promise<void> {
   }
 }
 
+/**
+ * Fees, backing and revenue - the numbers, and what they are not.
+ *
+ * Every figure here is read from the vault each poll. The panel exists
+ * because the protocol has a real revenue stream and no way to see it, and
+ * because the absence of holder yield was equally invisible: a reader could
+ * reasonably assume the 0.5% fee or a growing reserve accrued to them. It
+ * does not. `redeem` pays `shares * price - fee`, so the surplus below is
+ * over-collateralisation that makes redemption more likely to succeed, not a
+ * balance a holder can withdraw.
+ *
+ * So the panel states that outright. An APY on shares would need a mechanism
+ * that pays holders, and there is none; printing one would be a claim the
+ * contract contradicts.
+ */
+function renderSolvencyPanel(chain: MarketState): void {
+  const fees = feeView(chain.feeBps, chain.reserveShareBps, chain.reserves, chain.liabilities);
+  const view = chain.liabilities !== null ? solvency(chain.reserves, chain.liabilities) : null;
+
+  const rows: HTMLElement[] = [
+    stat(
+      "Backing",
+      view?.coverageBps != null ? `${(view.coverageBps / 100).toFixed(2)}%` : "unknown",
+      undefined,
+      view?.coverageBps != null
+        ? `${formatAmount(chain.reserves, MUSD_DECIMALS, 2)} MUSD held against ${formatAmount(chain.liabilities ?? 0n, MUSD_DECIMALS, 2)} owed`
+        : "the price is unreadable, so what the vault owes is unknown",
+    ),
+    stat(
+      view?.short ? "Shortfall" : "Reserve surplus",
+      `${formatAmount(view?.short ? view.shortfall : fees.surplus, MUSD_DECIMALS, 4)} MUSD`,
+      undefined,
+      view?.short ? "redemption reverts until someone funds the backstop" : "a buffer against a rising index, not payable to holders",
+    ),
+    stat(
+      "Protocol revenue",
+      `${formatAmount(chain.feesAccrued, MUSD_DECIMALS, 4)} MUSD`,
+      undefined,
+      "taken as fees to date, held outside reserves",
+    ),
+  ];
+
+  sections.trade.append(
+    el("div", { class: "panel-fees" }, [
+      el("h3", {}, ["Fees, backing and revenue"]),
+      el("div", { class: "stats" }, rows),
+      el("p", { class: "muted small" }, [
+        `Buying and redeeming each cost ${(chain.feeBps / 100).toFixed(2)}%. Of that, ${(fees.toReservesBps / 100).toFixed(2)}% stays in the vault as backing and ${(fees.toTreasuryBps / 100).toFixed(2)}% is protocol revenue. Both figures are read from the contract, not assumed.`,
+      ]),
+      /* The sentence this panel was built around. It is deliberately not
+         softened: a reader deciding whether to hold needs it to be the
+         plainest line here. */
+      el("p", { class: "muted small" }, [
+        el("strong", {}, ["Holding a share pays no income."]),
+        " A share returns the index price at the moment you redeem, less the fee. Reserves growing does not increase what one share is worth, so there is no yield and no APY to quote. Fee revenue currently accrues to the treasury; routing it to MEZO stakers is the next step, and that will have a rate derived from these same numbers.",
+      ]),
+    ]),
+  );
+}
+
 function renderTrade(): void {
   clear(sections.trade);
   sections.trade.append(el("h2", { id: "trade-heading" }, ["Buy and redeem"]));
@@ -1013,6 +1073,7 @@ function renderTrade(): void {
       );
     }
   }
+  if (chain) renderSolvencyPanel(chain);
   if (chain?.paused) {
     sections.trade.append(notice("warning", "The guardian has paused this vault. Buying and redeeming revert until it is unpaused."));
   }

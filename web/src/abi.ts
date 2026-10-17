@@ -11,6 +11,10 @@ export const VAULT_ABI = [
   { type: "function", name: "reserves", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "liabilities", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  /* The fee split, so the page can say where a fee goes rather than asserting
+     a hardcoded half. Both are read every poll; neither is assumed. */
+  { type: "function", name: "reserveShareBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  { type: "function", name: "feesAccrued", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "maxShares", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
   { type: "function", name: "maxStaleness", stateMutability: "view", inputs: [], outputs: [{ type: "uint32" }] },

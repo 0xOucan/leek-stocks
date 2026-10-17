@@ -970,3 +970,28 @@ a.button .icon {
 .link-button:hover {
   text-decoration: none;
 }
+
+/*
+ * The fees, backing and revenue panel.
+ *
+ * Bordered rather than plain, because it sits between the solvency warnings
+ * and the trade form and needs to read as reference rather than as another
+ * warning.
+ */
+.panel-fees {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-muted);
+}
+
+.panel-fees h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.panel-fees p {
+  margin: 0;
+}

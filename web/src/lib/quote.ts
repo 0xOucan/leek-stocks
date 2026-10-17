@@ -87,3 +87,39 @@ export function solvency(reserves: bigint, liabilities: bigint): SolvencyView {
     coverageBps: Number((reserves * BPS) / liabilities),
   };
 }
+
+/* ------------------------------------------------------- fees and revenue */
+
+export interface FeeView {
+  /** Reserves minus liabilities, zero when short. The over-collateralisation. */
+  readonly surplus: bigint;
+  /** The slice of each fee that stays in the vault, in basis points. */
+  readonly toReservesBps: number;
+  /** The slice that becomes protocol revenue, in basis points. */
+  readonly toTreasuryBps: number;
+}
+
+/**
+ * Where a fee goes, and what the vault holds beyond what it owes.
+ *
+ * This exists to be shown, and it exists because the page had no honest way
+ * to answer "what do I earn by holding a share". The answer is nothing:
+ * `redeem` pays `shares * price - fee`, so the reserve surplus below is a
+ * solvency buffer and not a claim a holder can withdraw. Doubling reserves
+ * does not change what one share returns. That makes a share price exposure,
+ * and it makes an APY on shares a number with no mechanism behind it.
+ *
+ * `feeBps` and `reserveShareBps` are read from the vault every poll rather
+ * than assumed, because both are settable within bounds and a page that
+ * hardcodes 0.5% and a half becomes wrong the moment a governance call lands.
+ */
+export function feeView(feeBps: number, reserveShareBps: number, reserves: bigint, liabilities: bigint | null): FeeView {
+  // Multiply before dividing, as everywhere else: at 50 bps and 5000 bps the
+  // naive (feeBps / 2) happens to be right, and at an odd split it is not.
+  const toReservesBps = (feeBps * reserveShareBps) / Number(BPS);
+  return {
+    surplus: liabilities !== null && reserves > liabilities ? reserves - liabilities : 0n,
+    toReservesBps,
+    toTreasuryBps: feeBps - toReservesBps,
+  };
+}

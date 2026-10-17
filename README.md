@@ -138,6 +138,62 @@ demonstration of issuance, pricing and hardware-confirmed signing. It is not a
 fund, and nobody should put money in it. See
 [audit/AUDIT-REPORT.md](audit/AUDIT-REPORT.md), finding H-1.
 
+## Fees, revenue and what a share does not pay
+
+The protocol charges a fee on both sides of issuance and splits it. Every
+number here is a getter, so the dapp reads them rather than repeating them:
+
+| Getter | Live on Mezo testnet | What it is |
+|---|---|---|
+| `feeBps()` | 50 | 0.5% on `buy` and on `redeem`, taken from the undivided product so the split does not compound the fee's own truncation |
+| `reserveShareBps()` | 5000 | the share of each fee that **stays in the vault** as backing |
+| `feesAccrued()` | 1.1366 MUSD | protocol revenue to date, held **outside** `reserves()` and withdrawable only by `TREASURER_ROLE` |
+| `MAX_FEE_BPS` | 500 | the ceiling the deployer may set, enforced in the constructor and in `setFee` |
+
+So at the live settings a 100 MUSD purchase pays 0.5 MUSD, of which 0.25
+becomes backing and 0.25 becomes revenue.
+
+### A share pays no income, and there is no APY
+
+This needs saying plainly, because the fee stream above makes it easy to
+assume otherwise.
+
+`redeem` pays `shares * price - fee`. The price comes from the oracle. **The
+vault's reserves do not enter that calculation.** A holder who waits while
+reserves grow receives exactly what they would have received before:
+
+```
+reserves           145.035739 MUSD
+share supply         1.448714
+oracle price        99.742924 MUSD/share
+liabilities        144.498950 MUSD   (supply * price)
+backing ratio          100.371%
+surplus                  0.536788 MUSD
+
+MUSD per share, today:           99.742924   (price only)
+MUSD per share, reserves doubled: 99.742924   (unchanged)
+```
+
+The surplus is **over-collateralisation**. It makes redemption more likely to
+succeed against a rising index, which is worth something to a holder, but it
+is not a balance anyone can withdraw and it is not yield. There is no
+mechanism in `IssuanceVault` that pays a holder for holding, so there is no
+rate to quote, and a quoted APY would be a number the contract contradicts.
+The dapp says this where someone decides whether to hold.
+
+Redemption is priced from the oracle rather than from net asset value on
+purpose: a share is meant to **track the index**. NAV-based redemption would
+make the share track the vault's balance sheet instead, which is a different
+product and not the one being built.
+
+### Where yield is going to come from
+
+Not from holding shares - from staking MEZO against the revenue stream above.
+The treasury share of each fee is real income with no emissions behind it, and
+routing it to stakers gives a rate that divides MUSD actually distributed by
+MEZO actually staked. Both terms are on chain and both are checkable. That
+work is tracked separately; nothing in this repo pays yield today.
+
 ## Front end
 
 [web/](web/) is the dapp: prices, buy and redeem, and the vault's reserves
