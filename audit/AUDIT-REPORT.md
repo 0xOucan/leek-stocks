@@ -23,7 +23,7 @@ checklist row below for what it proves.
 | ID | Severity | Title | Status |
 |---|---|---|---|
 | H-1 | High | A synthetic issuer is insolvent when the index rises | **Accepted, bounded, documented** |
-| H-1a | High | Nobody is paid to fund the backstop | Accepted for testnet, named |
+| H-1a | High | Nobody is paid to fund the backstop | **Mechanism added**: every fee splits into reserves |
 | M-1 | Medium | The oracle is a single operator | Accepted, documented |
 | M-2 | Medium | The admin may raise the share cap without limit | Accepted |
 | L-1 | Low | First published answer is unbounded | Accepted |
@@ -80,9 +80,18 @@ cannot exit.
 revert, and the recovery in that test happens only because the test itself
 calls `fund()`. On chain, nothing makes that call happen.
 
-**Recommendation**: for a testnet demonstration, accepted and stated: the
-operator funds it, and the README says the thing is not a fund. For anything
-real the backstop must be a mechanism rather than a habit — fees routed to
+**Recommendation**: **fixed, and the fix is a mechanism rather than a habit.**
+A configurable `reserveShareBps` splits every fee: that share stays in
+reserves, the remainder reaches the treasury. The backstop therefore grows on
+every trade with nobody deciding to be generous, and the deployment sets it to
+50%. `coverageBps()` makes the gap a number rather than an inference, and the
+fork test asserts on live MUSD that a fresh buy leaves coverage above 100%.
+
+It stays a High finding rather than becoming Info, because fees repair the gap
+in proportion to volume and a fast index rally still outruns them. `fund()`
+remains for a deliberate top-up and still pays its caller nothing. The honest
+claim is that the shortfall is now self-repairing, not that it is covered. The
+real answer is still a funded counterparty — fees routed to
 reserves until a target ratio is met, or a funded counterparty such as the
 lending market taking the other side of the exposure. Design that before
 anyone's money is at stake, not after.

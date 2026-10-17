@@ -44,6 +44,10 @@ Pre-flight, in order, each one a gate rather than a suggestion:
       medium finding.
 - [ ] The deployer address funded with **test BTC** — Mezo's gas token is BTC,
       not ether, so a balance of "ETH" is not a thing on this chain.
+- [ ] **Which MUSD.** Two live tokens on Mezo testnet answer to that symbol
+      and only one is borrowable. See ADDRESSES.md: settle in `0xf9BBcC…`, and
+      re-run the `mintList` check that proves it, because a redeployment on
+      Mezo's side moves the answer.
 - [ ] `cast call <MUSD> "decimals()(uint8)" --rpc-url https://rpc.test.mezo.org`
       returns 18. The deploy script enforces this too (audit finding L-5), but
       checking by hand costs nothing and the script's revert costs gas.
@@ -70,10 +74,27 @@ Afterwards, in order:
 # code accepts a transfer and loses it, silently.
 cast code <address> --rpc-url https://rpc.test.mezo.org | head -c 20
 
-# [LOCAL] Verify the sources. Mezo's explorer is Blockscout, so the verifier
-# is blockscout and the URL ends in /api, not the explorer's front page.
-forge verify-contract <address> src/IndexOracle.sol:IndexOracle   --chain-id 31611   --verifier blockscout   --verifier-url https://explorer.test.mezo.org/api   --watch
+# [LOCAL] Verify the sources. Found by probing on 2026-10-17: the API is NOT
+# on the explorer host. explorer.test.mezo.org returns a Blockscout 404 page
+# for every API path; api.explorer.test.mezo.org answers, which is where
+# --verifier-url must point. Proved by reading MUSD's own verified source back
+# through it. No Etherscan API key is involved: Blockscout needs none, so
+# there is nothing here to keep secret.
+forge verify-contract <address> src/IndexOracle.sol:IndexOracle   --chain-id 31611   --verifier blockscout   --verifier-url https://api.explorer.test.mezo.org/api   --watch
 ```
+
+Verification is better folded into the deploy itself, because an unverified
+contract is one nobody can audit from the explorer:
+
+```sh
+forge script script/DeployMezoTestnet.s.sol \
+  --rpc-url mezo_testnet --account monad-deployer --sender <address> \
+  --broadcast --verify --verifier blockscout \
+  --verifier-url https://api.explorer.test.mezo.org/api
+```
+
+If verification fails mid-run the deployment still happened: re-run
+`forge verify-contract` per address rather than redeploying.
 
 Then confirm the first oracle round published — the script does it in the same
 reviewed step, so a feed's first answer is never the unbounded one (finding
