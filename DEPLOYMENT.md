@@ -1,4 +1,8 @@
-# Deploying LeekStonks
+# Deploying LeekDefi
+
+**LeekDefi** is the host: one front end serving **LeekStonks** (the index
+market, this repository) and later **Leeknding** (the lending market, in
+`leek-lend`).
 
 Two deployment units on one hostname, plus the contracts they talk to. Written
 against the operator's own infrastructure repository (`0xOucan/vpsinfra`:
@@ -179,7 +183,7 @@ depends on the other to start.
 ## 6. Verify
 
 - [ ] `https://leekdefi.0xoucanproject.xyz` loads over HTTPS, and the tab reads
-      "LeekStonks — Lending and ETFs protocol".
+      "LeekStonks — LeekDefi".
 - [ ] `https://leekdefi.0xoucanproject.xyz/prices` returns JSON. This proves the
       internal proxy works, which is the part that is easy to get wrong.
 - [ ] `https://feed.leekdefi.0xoucanproject.xyz/healthz` returns `{"ok":true}`

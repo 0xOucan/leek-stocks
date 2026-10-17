@@ -1,10 +1,12 @@
-# web — LeekStonks
+# web — LeekStonks, the LeekDefi front end
 
 The dapp: read the oracle's prices, buy and redeem index shares against MUSD,
 and see the vault's reserves against its liabilities before committing
 anything. One page, three sections, no framework.
 
-**Tab title:** "LeekStonks — Lending and ETFs protocol". The lending market
+**Tab title:** "LeekStonks — LeekDefi". **LeekDefi** is the host and the
+front end; **LeekStonks** is the index market it serves today; **Leeknding**
+is the lending market it will serve next. The lending market
 does not exist yet, so the page says so in a line rather than offering a
 section that leads nowhere.
 

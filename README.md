@@ -1,7 +1,13 @@
-# leek-stocks
+# leek-stocks — LeekStonks
 
 Parody index tokens, settled in **MUSD** on Mezo, with an oracle you can read
 and a signing path that ends on hardware.
+
+**The names.** **LeekDefi** is the whole thing, at
+`leekdefi.0xoucanproject.xyz`: one host, one front end, two products.
+**LeekStonks** is this repository — the index market. **Leeknding** is the
+lending market, in `leek-lend`, written and tested and not yet deployed. The
+wallet that signs for all of it is **LeekWallet**.
 
 Built for the Mezo Buildathon, Track 1. The wallet that signs it is
 [LeekWallet](https://github.com/0xOucan/LeekWallet); the lending market that
@@ -87,6 +93,28 @@ invariant and fork suites are in the tree.
   nothing from Chainlink: it is four view functions. Anything already written
   against Chainlink feeds — Mezo's own `PriceFeed` among them — consumes this
   one unchanged.
+
+## Run the whole thing locally
+
+```sh
+./scripts/local-up.sh              # anvil, contracts, feed, dapp -> http://127.0.0.1:5173
+./scripts/local-up.sh --no-dapp    # contracts and feed only
+```
+
+Anvil on chain 31337; the real deploy script, through its `ALLOW_CHAIN_ID`
+rehearsal escape, so the script that deploys to Mezo is the script that gets
+tested; a mock settlement token, because the real MUSD exists only on Mezo,
+with a million of it minted to Anvil's first account; the feed publishing
+synthetic prices every ten seconds; and the dapp pointed at all of it through
+a `web/.env.local` written fresh on each run, so a stale address cannot
+survive a redeploy.
+
+Ctrl-C stops everything it started. The private key in that script is Anvil's
+own published test key - safe because this chain holds nothing, and it appears
+nowhere near the deployment path.
+
+To click through it: add a network to your wallet with RPC
+`http://127.0.0.1:8545` and chain id `31337`, then import Anvil's account 0.
 
 ## Build and test
 
