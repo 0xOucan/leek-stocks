@@ -29,7 +29,18 @@ MUSD=0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af
 BORROWER_OPERATIONS=0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba
 
 CHECKS_ONLY=0
-[[ "${1:-}" == "--checks-only" ]] && CHECKS_ONLY=1
+RESUME=0
+case "${1:-}" in
+  --checks-only) CHECKS_ONLY=1 ;;
+  # Continue a run whose transactions were sent but whose receipts were not
+  # collected. Mezo's RPC answers eth_getTransactionReceipt with null for a
+  # short window after a transaction is already in a block, and Foundry treats
+  # that null as a failure. The transactions are real; --resume picks up where
+  # the broadcast stopped instead of starting over and orphaning what landed.
+  --resume) RESUME=1 ;;
+  "") ;;
+  *) echo "unknown argument: $1" >&2; exit 1 ;;
+esac
 
 say() { printf '\n== %s\n' "$1"; }
 fail() { printf 'STOP: %s\n' "$1" >&2; exit 1; }
@@ -104,8 +115,12 @@ cat <<PLAN
    verification  blockscout at $VERIFIER_URL
 
 PLAN
-read -r -p "Type yes to deploy: " answer
-[[ "$answer" == "yes" ]] || fail "not confirmed"
+if [[ "$RESUME" == 1 ]]; then
+  echo "   RESUMING a previous broadcast; already-sent transactions are not repeated."
+else
+  read -r -p "Type yes to deploy: " answer
+  [[ "$answer" == "yes" ]] || fail "not confirmed"
+fi
 
 say "deploying"
 # --slow sends one transaction at a time and waits for each receipt.
@@ -118,11 +133,20 @@ say "deploying"
 # sequence 1 while the account is still at 0 is rejected outright rather than
 # held: "invalid nonce; got 1, expected 0: invalid sequence". The first run
 # here landed one contract and lost the rest to exactly that.
+# --timeout, because the receipt is the flaky part. On Mezo a transaction can
+# be in a block while eth_getTransactionReceipt still answers null, and
+# Foundry reads that null as "failed to receive a receipt" and stops. It is
+# not failure: the first --slow attempt here was reported as an error and the
+# contract it deployed is on chain with status 1. A longer window lets the
+# node catch up rather than abandoning a broadcast that worked.
+EXTRA=()
+[[ "$RESUME" == 1 ]] && EXTRA+=(--resume)
+
 SETTLEMENT_TOKEN="$MUSD" forge script script/DeployMezoTestnet.s.sol \
   --rpc-url "$RPC" \
   --account "$ACCOUNT" \
   --sender "$SENDER" \
-  --broadcast --slow \
+  --broadcast --slow --timeout 300 "${EXTRA[@]}" \
   --verify --verifier blockscout --verifier-url "$VERIFIER_URL" \
   | tee /tmp/leekstonks-mezo-deploy.log
 
