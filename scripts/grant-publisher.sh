@@ -108,10 +108,22 @@ cat <<NEXT
   Fund the publisher with a little BTC for gas. Mezo's base fee is about 130
   wei, so a few thousandths of a BTC publishes for months:
 
-    cast send $PUBLISHER --value 0.005ether --rpc-url $RPC --account $ACCOUNT
+    cast send $PUBLISHER --value 0.005ether --rpc-url $RPC --account $ACCOUNT \
+      --async
 
   That prompts for the password. Sending it from your wallet works just as
   well.
+
+  --async matters here. Without it, `cast send` waits for a receipt, and Mezo
+  answers eth_getTransactionReceipt with null for minutes after a transaction
+  is already in a block - so it prints
+
+    Error: server returned a null response when a non-null response was expected
+
+  and the transfer has landed anyway. Confirm by reading the balance, which is
+  the thing you actually wanted to know:
+
+    cast balance $PUBLISHER --rpc-url $RPC
 
   Then put the publisher's PRIVATE key in the feed's secrets file on the VPS:
 

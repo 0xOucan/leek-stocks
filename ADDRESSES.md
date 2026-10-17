@@ -276,7 +276,18 @@ Set on 2026-10-17, verified by reading `hasRole` on both oracles:
 | Keystore | Address | Holds | Can therefore |
 |---|---|---|---|
 | `monad-deployer` | `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` | `DEFAULT_ADMIN_ROLE`, guardian, treasurer | pause, move fees, reconfigure, grant roles — **not** publish |
-| `leek-publisher` | `0x843914e5BBdbE92296F2c3D895D424301b3517fC` | `PUBLISHER_ROLE` only | push prices, inside an immutable 20% per-round bound |
+| `leek-publisher` (local) | `0x843914e5BBdbE92296F2c3D895D424301b3517fC` | `PUBLISHER_ROLE` only | push prices, inside an immutable 20% per-round bound |
+| **production publisher (VPS)** | `0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E` | `PUBLISHER_ROLE` only | the same, and the one that goes in the server's secrets file |
+
+**Two publisher keys, one per location, deliberately.** Both hold
+`PUBLISHER_ROLE` and nothing else, so neither can pause the feed, move fees or
+widen the oracle's deviation bound. They are separate because the local one's
+plaintext lives in `feed/.env` on a workstation for rehearsals, and a key on a
+workstation should not be the key on the server: a compromise of one desktop
+then reaches nothing in production. `0x76460066…` was granted the role and
+funded with 0.005 BTC on 2026-10-17 and has no keystore on the workstation by
+design — it exists only in the operator's own store and in the server's
+secrets file.
 
 The deployer's publisher rights were **revoked** on both oracles, so the only
 key that can move a price is the one with nothing else on it — which is the

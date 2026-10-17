@@ -138,6 +138,7 @@ Contents are documented in `feed/.env.example`. The values that matter:
 
 ```
 PUBLISHER_PRIVATE_KEY=0x…      # placed by the operator, never by the agent
+                               # derives to 0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E
 ORACLE_GOLOGGLE=0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6
 ORACLE_AMEZON=0x5Ed8205bA3DC7075099cFC4b2D4b7f2fF8a9cf9D
 RPC_URL=https://rpc.test.mezo.org
@@ -161,10 +162,11 @@ deploying, in both directions:
 ```sh
 R=https://rpc.test.mezo.org
 ORACLE=0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6
+PUB=0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E   # the production publisher
 cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "PUBLISHER_ROLE") \
-  0xTheFeedAddress --rpc-url $R      # must be true
+  $PUB --rpc-url $R      # must be true
 cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "DEFAULT_ADMIN_ROLE") \
-  0xTheFeedAddress --rpc-url $R      # must be FALSE
+  $PUB --rpc-url $R      # must be FALSE
 ```
 
 A `true` on the second line means the deployer key is about to sit on a server

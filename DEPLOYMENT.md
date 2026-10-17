@@ -59,10 +59,11 @@ assume them.
       Verify with `hasRole`, not from memory:
       ```sh
       ORACLE=0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6
+      PUB=0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E   # production publisher
       cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "PUBLISHER_ROLE") \
-        0xTheFeedAddress --rpc-url https://rpc.test.mezo.org   # must be true
+        $PUB --rpc-url https://rpc.test.mezo.org   # must be true
       cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "DEFAULT_ADMIN_ROLE") \
-        0xTheFeedAddress --rpc-url https://rpc.test.mezo.org   # must be false
+        $PUB --rpc-url https://rpc.test.mezo.org   # must be false
       ```
 - [ ] That secrets file is `0600` and outside every repository:
       `stat -c '%a %U %n' /srv/oucan/secrets/projects/leekdefi-feed.env`.
@@ -302,13 +303,26 @@ compromised server would then be able to pause the feed, move the fees and
 reconfigure the vaults, rather than only push prices inside an immutable
 per-round bound — which is all `PUBLISHER_ROLE` can do.
 
+**Done on 2026-10-17.** The production publisher is
+`0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E`, granted on both oracles and
+funded with 0.005 BTC. `leek-publisher`
+(`0x843914e5BBdbE92296F2c3D895D424301b3517fC`) keeps the role for local
+rehearsals: one key per location, so a compromised workstation reaches nothing
+in production. Both are publisher-only. For a future one:
+
 ```sh
 cast wallet new                                      # [LOCAL] a key for this and nothing else
 ./scripts/grant-publisher.sh 0xTheNewAddress         # grant it the role
 ./scripts/grant-publisher.sh 0xTheNewAddress --revoke-deployer
 cast send 0xTheNewAddress --value 0.005ether --rpc-url https://rpc.test.mezo.org \
-  --account monad-deployer                           # gas: ~130 wei a unit here
+  --account monad-deployer --async                   # gas: ~130 wei a unit here
 ```
+
+`--async` on that last line is not optional comfort. Without it `cast send`
+waits for a receipt, Mezo answers `eth_getTransactionReceipt` with null for
+minutes after inclusion, and it prints `Error: server returned a null response
+when a non-null response was expected` for a transfer that landed. Confirm
+with `cast balance`, not with the exit code.
 
 `--revoke-deployer` drops the deployer's own publisher rights. It keeps
 `DEFAULT_ADMIN_ROLE`, so it can always grant them back; what it loses is the
