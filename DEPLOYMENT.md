@@ -36,8 +36,42 @@ to publish to an oracle address and the dapp's whole job is to read vault
 addresses.
 
 1. Contracts to Mezo testnet (below).
-2. The feed's secrets file, which needs those addresses.
-3. Both deployments.
+2. **Audit the history and make the repository public** (3a) — vpsinfra clones
+   it, and both registry entries say `github-public`.
+3. **A publisher key that holds `PUBLISHER_ROLE` and nothing else** (3b).
+4. **The feed's secrets file** at `/srv/oucan/secrets/projects/leekdefi-feed.env`,
+   mode 0600, holding that key (4).
+5. The dapp's build arguments, which are Dockerfile defaults today (4b).
+6. Both deployments, feed first (5), then the verification list (6).
+
+### Hard gates
+
+Each of these has exactly one failure mode and it is silent. Tick them, do not
+assume them.
+
+- [ ] `git check-ignore -v feed/.env web/.env` prints **both** paths. Silence
+      means a private key is about to be published.
+- [ ] The key in `/srv/oucan/secrets/projects/leekdefi-feed.env` is **not** the
+      deployer key. The deployer holds admin, guardian and treasurer on every
+      contract; a compromised server holding it could pause the feed, move the
+      fees and reconfigure the vaults. A publisher key can only push a price
+      inside an immutable per-round bound.
+      Verify with `hasRole`, not from memory:
+      ```sh
+      ORACLE=0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6
+      cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "PUBLISHER_ROLE") \
+        0xTheFeedAddress --rpc-url https://rpc.test.mezo.org   # must be true
+      cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "DEFAULT_ADMIN_ROLE") \
+        0xTheFeedAddress --rpc-url https://rpc.test.mezo.org   # must be false
+      ```
+- [ ] That secrets file is `0600` and outside every repository:
+      `stat -c '%a %U %n' /srv/oucan/secrets/projects/leekdefi-feed.env`.
+- [ ] The publisher holds only gas. `sweep-publisher.sh` moves the rest home.
+- [ ] `npm run build` in `web/` ends with `check-bundle: ok`. It fails the
+      build if a contract address is missing or an impostor MUSD is baked in,
+      which is what a forgotten build arg produces (4b).
+- [ ] Neither container port answers at the origin IP:
+      `curl --max-time 5 http://<origin ip>:8080` and `:8787` must both fail.
 
 ## 1. Contracts
 
@@ -207,8 +241,56 @@ entries reference: `leekdefi.caddy.tmpl` and `leekdefi-feed.caddy.tmpl`.
 `{{UPSTREAM}}` is substituted with `oucan-<project>`, which is why the dapp's
 template can name `oucan-leekdefi-feed:8787` directly for the `/prices` route.
 
-Both repositories are private, so each needs a **read-only deploy key** on the
-VPS (step 6 of `docs/adding-projects.md`).
+Both registry entries say `SOURCE_TYPE=github-public`, so **no deploy key is
+needed**: vpsinfra clones over HTTPS. That is only true while the repository
+actually is public — read the next section before making it so, and if it ever
+goes private again, both entries must go back to `github-private` and each
+needs a read-only deploy key (step 6 of `docs/adding-projects.md`).
+
+## 3a. Before this repository goes public
+
+The Buildathon requires a public GitHub repository, and this one holds a
+deployment runbook. Audited on 2026-10-17 across **every commit on every
+branch**, not just the tip:
+
+```sh
+# [LOCAL] the whole history, not the working tree
+git log --all --name-only -- '*.env'                    # which .env files were ever committed
+git grep -nIE '0x[0-9a-fA-F]{64}' $(git rev-list --all) # private-key shaped strings
+git grep -nIiE '(PASSWORD|SECRET|TOKEN|KEY)=["'"'"']?[A-Za-z0-9+/_-]{12,}' $(git rev-list --all)
+```
+
+What it found, and why each is fine:
+
+| Hit | Verdict |
+|---|---|
+| `feed/.env.example` → `PUBLISHER_PRIVATE_KEY=0x000…000` | a 32-byte zero placeholder |
+| `scripts/local-up.sh` → `0xac0974be…f2ff80` | **Anvil account 0**, a key published in Foundry's own documentation and already annotated as such. Worthless by design; do not "fix" it |
+| `web/deploy/leekdefi.env`, `feed/deploy/leekdefi-feed.env` | registry entries. No secrets: hostnames, ports, limits, and a WalletConnect project id, which is a public client identifier |
+
+Zero hits for PEM private keys, mnemonics, seed phrases, Cloudflare API
+tokens, Tailscale auth keys (`tskey-`), GitHub tokens (`ghp_`,
+`github_pat_`), Etherscan keys and keystore ciphertext. The ~190 matches for
+"password" are all prompt plumbing — `read -rsp`, `--password-file`,
+`PASSFILE` — and none is a password value.
+
+**Two files hold real secrets and neither is tracked**, which `.gitignore`
+asserts and `git check-ignore` proves rather than assumes:
+
+```sh
+# [LOCAL] must print both paths; silence means a secret is about to be published
+git check-ignore -v feed/.env web/.env
+```
+
+- `feed/.env` — the publisher private key. Written by
+  `scripts/feed-env.sh`, which refuses to write it unless the path is already
+  git-ignored, creates it 0600 before anything goes into it, and never puts
+  the key in an argument or a log.
+- `web/.env` — no secret, but local build values that should not shadow the
+  Dockerfile's.
+
+Re-run the three commands above before flipping the repository to public.
+The audit is cheap; a leaked publisher key is a key rotation and a redeploy.
 
 ## 3b. A key for the feed, and only for the feed
 

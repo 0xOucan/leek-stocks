@@ -553,15 +553,35 @@ h3 {
   font-family: var(--font-mono);
   width: 100%;
 }
+/*
+ * The tab group. Two segments when it was written (Buy / Redeem), three now
+ * that a position can be repaid, borrowed against or closed.
+ *
+ * `overflow: hidden` gives it the joined-pill look and is also the reason it
+ * had to change: with three segments at the old 20px side padding the group
+ * measures about 307px, which fits a 375px phone and is wider than the 288px
+ * a 320px one leaves after the page gutter. The failure mode of a clipped
+ * flex row inside `overflow: hidden` is the worst one available - the third
+ * label is simply not there, with no scrollbar and no ellipsis to suggest
+ * anything is missing.
+ *
+ * So the segments share the row and shrink, and the padding is smaller until
+ * there is room for it. Labels stay on one line down to 320px; below that
+ * they wrap inside their own segment and the group grows taller, which is
+ * ugly and legible rather than tidy and wrong.
+ */
 .segmented {
-  display: inline-flex;
+  display: flex;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   overflow: hidden;
 }
 .segment {
+  /* Shares the width rather than being cut off by the clip above. */
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 44px;
-  padding: 10px 20px;
+  padding: 10px 12px;
   background: transparent;
   color: var(--color-foreground);
   border: none;
@@ -574,6 +594,14 @@ h3 {
 .segment.is-active {
   background: var(--color-primary);
   color: var(--color-on-primary);
+}
+@media (min-width: 640px) {
+  /* Room for the roomier look: segments hug their labels again instead of
+     stretching a three-tab group across 880px. */
+  .segment {
+    flex: 0 1 auto;
+    padding: 10px 20px;
+  }
 }
 
 .field {
