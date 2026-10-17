@@ -25,35 +25,53 @@ export const INDICES: readonly IndexDefinition[] = [
   {
     symbol: "GOLOGGLE",
     description: "GOLOGGLE / MUSD",
-    // A search-and-infrastructure parody: two large caps and a compute-ish
-    // weighting. Weights are round numbers because nothing here is optimised.
+    /*
+     * A search-and-infrastructure parody: the things an index about indexing
+     * the world would be made of - a settlement layer, an oracle network and
+     * storage. Nothing here is Alphabet and the index makes no claim on it.
+     *
+     * No constituent is shared with AMEZON, and that is the point. The first
+     * weighting put bitcoin and ethereum at 80% of this basket and 60% of the
+     * other, so the two indices moved together: on 2026-10-17 they read
+     * 99.5961 and 99.5947, different in the fifth significant figure and
+     * identical to anyone looking at them. Two indices that cannot be told
+     * apart demonstrate nothing, however honest the arithmetic behind them.
+     */
     constituents: [
-      { id: "bitcoin", weightBps: 4000 },
       { id: "ethereum", weightBps: 4000 },
-      { id: "chainlink", weightBps: 2000 },
+      { id: "chainlink", weightBps: 3500 },
+      { id: "filecoin", weightBps: 2500 },
     ],
     baseValue: 100,
     /*
-     * Measured 2026-10-16 from the same endpoint the service uses:
-     * bitcoin 81504, ethereum 2418.42, chainlink 12.30 USD, weighted
-     * 40/40/20, giving 33571.428. Recorded rather than re-measured at start-up
-     * because re-measuring would silently rebase every holder's position: the
-     * index would read 100 again after a move, and a chart would show a
-     * market that never happened.
+     * Measured 2026-10-17 from the same endpoint the service uses:
+     * ethereum 2399.26, chainlink 11.98, filecoin 1.065 USD, weighted
+     * 40/35/25, giving 964.163250.
+     *
+     * Recorded rather than re-measured at start-up because re-measuring
+     * would silently rebase every holder's position: the index would read
+     * 100 again after a move, and a chart would show a market that never
+     * happened. Changing it is therefore a redeploy, not a config edit.
      */
-    baseBasket: 33_571.428,
+    baseBasket: 964.163_25,
   },
   {
     symbol: "AMEZON",
     description: "AMEZON / MUSD",
+    /*
+     * A commerce-and-throughput parody: high-volume settlement and the
+     * exchange layer on top of it. Again not Amazon, and again no
+     * constituent in common with GOLOGGLE.
+     */
     constituents: [
-      { id: "bitcoin", weightBps: 3000 },
-      { id: "ethereum", weightBps: 3000 },
       { id: "solana", weightBps: 4000 },
+      { id: "avalanche-2", weightBps: 3000 },
+      { id: "uniswap", weightBps: 3000 },
     ],
     baseValue: 100,
-    // Same measurement, 30/30/40 over bitcoin, ethereum and solana (104.25).
-    baseBasket: 25_218.426,
+    // Same measurement and endpoint: solana 103.34, avalanche-2 9.76,
+    // uniswap 7.14, weighted 40/30/30, giving 46.406.
+    baseBasket: 46.406,
   },
 ];
 
