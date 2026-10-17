@@ -50,11 +50,40 @@ got=$(cast chain-id --rpc-url "$RPC")
 [[ "$got" == "$CHAIN" ]] || fail "chain id is $got, expected $CHAIN"
 echo "   chain id $got, base fee $(cast base-fee --rpc-url "$RPC") wei"
 
+# The password, asked once, held in memory-backed storage, shredded on exit.
+#
+# Mezo serves eth_getTransactionReceipt as null for minutes after a
+# transaction is in a block, and Foundry stops when it reads one. Each
+# --resume therefore advances exactly one transaction, and a full deploy needs
+# a dozen runs - two password prompts each, which is how a careful operator
+# gets worn down into pasting a key on a command line. So: one prompt, into a
+# 0600 file on /dev/shm, which is tmpfs and never touches a disk, removed by
+# the exit trap whatever happens. It is still a secret in a file for a few
+# minutes; the alternative is twenty prompts or a password in `ps`, and this
+# is the least bad of the three.
+PASSFILE=""
+cleanup() { [[ -n "$PASSFILE" && -f "$PASSFILE" ]] && shred -u "$PASSFILE" 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
+
+ask_password() {
+  [[ -n "$PASSFILE" ]] && return 0
+  local dir=/dev/shm
+  [[ -d "$dir" && -w "$dir" ]] || dir="${TMPDIR:-/tmp}"
+  PASSFILE=$(mktemp "$dir/.leekpass.XXXXXX")
+  chmod 600 "$PASSFILE"
+  read -rsp "Keystore password for $ACCOUNT: " pw
+  echo
+  printf '%s' "$pw" > "$PASSFILE"
+  unset pw
+}
+
 say "previous attempts"
 # An abandoned contract from a failed run is harmless but confusing: the
 # addresses in a half-finished log are the ones simulation predicted, not what
 # exists. Say so plainly rather than letting someone record them.
-NONCE=$(cast nonce "$(cast wallet address --account "$ACCOUNT" 2>/dev/null || echo 0x0000000000000000000000000000000000000000)" --rpc-url "$RPC" 2>/dev/null || echo 0)
+ask_password
+SENDER=$(cast wallet address --account "$ACCOUNT" --password-file "$PASSFILE")
+NONCE=$(cast nonce "$SENDER" --rpc-url "$RPC" 2>/dev/null || echo 0)
 if [[ "$NONCE" != "0" ]]; then
   cat <<WARN
    This account has sent $NONCE transaction(s) before. If an earlier deploy
@@ -65,10 +94,8 @@ WARN
 fi
 
 say "the deployer"
-# Asked of the keystore rather than assumed, because deploying from the wrong
-# address is a mistake that is only obvious afterwards. This prompts for the
-# password; nothing is signed yet.
-SENDER=$(cast wallet address --account "$ACCOUNT")
+# Read from the keystore above rather than assumed: deploying from the wrong
+# address is a mistake that is only obvious afterwards.
 echo "   $ACCOUNT is $SENDER"
 BAL=$(cast balance "$SENDER" --rpc-url "$RPC")
 echo "   balance $(cast from-wei "$BAL") BTC"
@@ -139,16 +166,47 @@ say "deploying"
 # not failure: the first --slow attempt here was reported as an error and the
 # contract it deployed is on chain with status 1. A longer window lets the
 # node catch up rather than abandoning a broadcast that worked.
-EXTRA=()
-[[ "$RESUME" == 1 ]] && EXTRA+=(--resume)
+# Loop, because one run is one transaction here. Foundry reports a null
+# receipt as failure and stops; the transaction it was waiting for has almost
+# always landed, so the next --resume confirms it and sends the next one. The
+# loop is bounded: a run that makes no progress twice in a row is a real
+# failure, not the receipt lag, and it stops rather than hammering the node.
+run_once() {
+  local extra=()
+  [[ "$1" == "resume" ]] && extra+=(--resume)
+  SETTLEMENT_TOKEN="$MUSD" forge script script/DeployMezoTestnet.s.sol \
+    --rpc-url "$RPC" \
+    --account "$ACCOUNT" --password-file "$PASSFILE" \
+    --sender "$SENDER" \
+    --broadcast --slow --timeout 300 "${extra[@]}" \
+    --verify --verifier blockscout --verifier-url "$VERIFIER_URL" \
+    2>&1 | tee -a /tmp/leekstonks-mezo-deploy.log
+  return "${PIPESTATUS[0]}"
+}
 
-SETTLEMENT_TOKEN="$MUSD" forge script script/DeployMezoTestnet.s.sol \
-  --rpc-url "$RPC" \
-  --account "$ACCOUNT" \
-  --sender "$SENDER" \
-  --broadcast --slow --timeout 300 "${EXTRA[@]}" \
-  --verify --verifier blockscout --verifier-url "$VERIFIER_URL" \
-  | tee /tmp/leekstonks-mezo-deploy.log
+mode=$([[ "$RESUME" == 1 ]] && echo resume || echo fresh)
+stuck=0
+for attempt in $(seq 1 20); do
+  before=$(cast nonce "$SENDER" --rpc-url "$RPC" 2>/dev/null || echo 0)
+  echo
+  echo "-- attempt $attempt (nonce $before)"
+  if run_once "$mode"; then
+    echo
+    echo "== deploy completed on attempt $attempt"
+    break
+  fi
+  mode=resume
+  after=$(cast nonce "$SENDER" --rpc-url "$RPC" 2>/dev/null || echo "$before")
+  if [[ "$after" == "$before" ]]; then
+    stuck=$((stuck + 1))
+    echo "-- no progress (nonce still $after)"
+    [[ "$stuck" -lt 2 ]] || fail "two attempts in a row made no progress. Read the log above; this is not the receipt lag."
+  else
+    stuck=0
+    echo "-- progressed to nonce $after; resuming"
+  fi
+  sleep 5
+done
 
 cat <<'AFTER'
 
