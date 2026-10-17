@@ -97,6 +97,48 @@ failure that explains nothing.
 **Confirm before deploying** by re-running the two `mintList` calls above: if
 Mezo redeploys the trove system, the answer moves and this section is stale.
 
+## BTC as an ERC-20: there is no WBTC to wrap
+
+On Ethereum, DeFi uses WETH because native ether has no ERC-20 interface. On
+Mezo that problem does not exist: native BTC is exposed as an ERC-20 at a
+fixed address, over the **same** balance.
+
+| | |
+|---|---|
+| Address | `0x7b7C000000000000000000000000000000000000` |
+| `symbol()` / `name()` | `BTC` / `BTC` |
+| `decimals()` | 18 |
+| Code | 2,464 bytes — a real contract, not an empty address |
+
+Confirmed on 2026-10-17: `balanceOf(0x9c77…)` returned
+`0.084999994266769341`, which is that account's native balance **to the wei**,
+and `approve` and `transfer` both return true in simulation. So it is a view
+over the bank balance rather than a wrapper with its own pool — there is
+nothing to wrap, no wrapped supply to track, and no deposit step. `MEZO` sits
+at `0x7B7c000000000000000000000000000000000001` in the same range.
+
+This does not mean our vaults should accept BTC. They settle in MUSD because
+the index is dollar-denominated; taking BTC would put a currency mismatch
+between reserves and liabilities on top of the index mismatch that audit
+finding H-1 is already about. The ERC-20 interface removes the *mechanical*
+objection, not the design one.
+
+**There are at least five contracts on this chain reporting `MUSD` with 18
+decimals**, found by listing the explorer's token index:
+
+| Address | Holders | Note |
+|---|---|---|
+| `0x637e22A1EBbca50EA2d34027c238317fD10003eB` | 59,640 | most-held; **not** mintable by the live `BorrowerOperations` |
+| `0xe9C5143c3c116146D9745334cdD673AA124438Ae` | 50,000 | likewise |
+| `0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503` | 1,438 | the one Mezo's public reference names |
+| **`0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af`** | **256** | **ours — `mintList(BorrowerOperations)` is true** |
+| `0xC4b6A401756ff9D509c64d00985Deb572D58F9B2` | 254 | |
+
+Holder count is not evidence. The only test that matters is
+`mintList(BorrowerOperations)`, because a token the borrow system cannot mint
+is a token no user can obtain by borrowing — and the one we settle in is the
+fourth most held of the five.
+
 ## Mezo's own lending (not ours)
 
 Borrowing MUSD against BTC on Mezo is Mezo's protocol, and we integrate it
