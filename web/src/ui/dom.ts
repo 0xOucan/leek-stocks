@@ -132,7 +132,14 @@ export function actionButton(options: {
 }
 
 /** Truncated, copyable, linked. Never a raw 42-character hex run. */
-export function addressChip(address: string, truncated: string, explorerUrl: string): HTMLElement {
+/**
+ * An address, truncated, with copy and an optional explorer link.
+ *
+ * The link is optional because a local chain has no explorer, and offering one
+ * sends the reader to a "not found" page that reads as the address not
+ * existing. Copy always works, so the chip is still useful without it.
+ */
+export function addressChip(address: string, truncated: string, explorerUrl?: string): HTMLElement {
   const copy = el("button", {
     type: "button",
     class: "chip-action",
@@ -148,19 +155,20 @@ export function addressChip(address: string, truncated: string, explorerUrl: str
       })
       .catch(() => (copied.textContent = "copy failed"));
   });
-  const link = el("a", {
-    class: "chip-action",
-    href: explorerUrl,
-    target: "_blank",
-    rel: "noopener noreferrer",
-    "aria-label": `View ${address} on the Mezo explorer`,
-  }, [icon(ICONS.external)]);
-  return el("span", { class: "chip", title: address }, [
-    el("span", { class: "mono" }, [truncated]),
-    copy,
-    link,
-    copied,
-  ]);
+  const children: (HTMLElement | string)[] = [el("span", { class: "mono" }, [truncated]), copy];
+  if (explorerUrl !== undefined) {
+    children.push(
+      el("a", {
+        class: "chip-action",
+        href: explorerUrl,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        "aria-label": `View ${address} on the block explorer`,
+      }, [icon(ICONS.external)]),
+    );
+  }
+  children.push(copied);
+  return el("span", { class: "chip", title: address }, children);
 }
 
 /** An inline message, next to the control that caused it. */

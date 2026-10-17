@@ -80,10 +80,21 @@ export const publicClient: Client = createClient({
   }),
 });
 
-export function explorerAddressUrl(address: string): string {
-  return `${mezoTestnet.blockExplorers.default.url}/address/${address}`;
+/**
+ * Whether this chain has an explorer at all.
+ *
+ * A local chain does not, and linking to Mezo's for a transaction mined on
+ * Anvil sends the reader to a page that says "not found" — which reads as the
+ * transaction having vanished rather than as the link being wrong. Found by
+ * clicking a reverted redeem on chain 31337 and being offered
+ * explorer.test.mezo.org for the hash.
+ */
+export const HAS_EXPLORER = CONFIG.chainId === 31_611 || CONFIG.chainId === 31_612;
+
+export function explorerAddressUrl(address: string): string | undefined {
+  return HAS_EXPLORER ? `${mezoTestnet.blockExplorers.default.url}/address/${address}` : undefined;
 }
 
-export function explorerTxUrl(hash: string): string {
-  return `${mezoTestnet.blockExplorers.default.url}/tx/${hash}`;
+export function explorerTxUrl(hash: string): string | undefined {
+  return HAS_EXPLORER ? `${mezoTestnet.blockExplorers.default.url}/tx/${hash}` : undefined;
 }
