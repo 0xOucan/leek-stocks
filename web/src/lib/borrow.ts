@@ -137,3 +137,29 @@ export function formatIcr(icr: bigint | null): string {
   if (percent > 100_000n) return "> 100,000%";
   return `${percent.toLocaleString("en-US")}%`;
 }
+
+/**
+ * A collateral figure to put in the form: comfortable if the wallet allows
+ * it, and never one the wallet cannot cover.
+ *
+ * Both callers - the first prefill and the Suggest button - need the same
+ * answer, and the answer has to be consistent with the threshold the stepper
+ * uses to decide whether this step is reachable at all. Get that wrong and
+ * there is a dead end: a wallet just over the line gets offered a figure
+ * below the minimum ratio, and asking for a better one is refused for
+ * insufficient balance. So:
+ *
+ *   - aim at twice `suggested`, because `suggested` is a boundary and a user
+ *     who accepts a boundary is one price tick from being refused;
+ *   - never exceed the balance less a gas allowance, because collateral is
+ *     paid in the same asset as the fee;
+ *   - return 0 rather than something unsendable when even `suggested` does
+ *     not fit, which is the honest answer and the one the stepper agrees
+ *     with.
+ */
+export function startingCollateral(suggested: bigint, balance: bigint, gasAllowance: bigint): bigint {
+  const spendable = balance - gasAllowance;
+  if (suggested <= 0n || spendable < suggested) return 0n;
+  const comfortable = suggested * 2n;
+  return comfortable > spendable ? spendable : comfortable;
+}

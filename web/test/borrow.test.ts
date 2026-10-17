@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { FEE_MARGIN_BPS, GAS_COMPENSATION, formatIcr, troveQuote } from "../src/lib/borrow.ts";
+import { FEE_MARGIN_BPS, GAS_COMPENSATION, formatIcr, startingCollateral, troveQuote } from "../src/lib/borrow.ts";
 
 const ONE = 10n ** 18n;
 /** Mezo testnet's real feed: $20,000,000 a BTC. */
@@ -101,4 +101,33 @@ test("formatIcr caps the testnet's absurd ratios instead of printing them", () =
   assert.equal(formatIcr(null), "—");
   assert.equal(formatIcr((2n * ONE)), "200%");
   assert.equal(formatIcr(99551n * ONE), "> 100,000%");
+});
+
+const GAS = 10n ** 14n;
+
+test("a comfortable wallet is offered twice the suggested collateral", () => {
+  assert.equal(startingCollateral(ONE / 1000n, ONE, GAS), ONE / 500n);
+});
+
+test("a thin wallet is offered what it can actually spend, not more", () => {
+  const suggested = ONE / 1000n;              // 0.001
+  const balance = suggested + GAS + 1n;       // only just enough
+  const offered = startingCollateral(suggested, balance, GAS);
+  assert.ok(offered >= suggested, "still meets the ratio this page requires");
+  assert.ok(offered <= balance - GAS, "leaves the gas allowance behind");
+});
+
+test("a wallet that cannot cover the minimum ratio is offered nothing", () => {
+  /* The dead end this function exists to prevent: the alternative was a
+     prefill below the required ratio, whose only remedy - asking for the
+     suggested figure - was then refused for insufficient balance. Zero is
+     the honest answer, and it is the one the stepper's own threshold
+     (suggested + gas) agrees with. */
+  assert.equal(startingCollateral(ONE, ONE / 2n, GAS), 0n);
+  assert.equal(startingCollateral(ONE, ONE + GAS - 1n, GAS), 0n);
+});
+
+test("nothing suggested means nothing offered, with no negative wei", () => {
+  assert.equal(startingCollateral(0n, ONE, GAS), 0n);
+  assert.equal(startingCollateral(ONE / 1000n, 0n, GAS), 0n);
 });

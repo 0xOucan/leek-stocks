@@ -20,7 +20,7 @@ import { applySlippage, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
 import { claimAvailability, freshness } from "./lib/staleness.ts";
 import { faucetAllowedOnChain, readFaucetToken, FAUCET_ABI, type FaucetToken } from "./faucet.ts";
 import { allowanceFor } from "./allowance.ts";
-import { FEE_MARGIN_BPS, GAS_COMPENSATION, SAFE_ICR, formatIcr, troveQuote } from "./lib/borrow.ts";
+import { FEE_MARGIN_BPS, GAS_COMPENSATION, formatIcr, startingCollateral, troveQuote } from "./lib/borrow.ts";
 import { currentStep, isComplete, onboardingSteps, type OnboardingStep } from "./lib/onboarding.ts";
 import {
   BORROWER_OPERATIONS_ABI,
@@ -405,14 +405,7 @@ function borrowCollateralWei(): bigint | null {
   return parsed.ok ? parsed.value : null;
 }
 
-/**
- * A starting collateral figure: twice what 150% needs.
- *
- * Twice, not exactly 150%: the suggested figure is a boundary, and a user who
- * accepts a boundary is one price tick from being refused by this page's own
- * floor. Doubling it costs nothing on a testnet and makes the default
- * position one that survives a move.
- */
+/** Prefills the collateral field once the price and a balance are known. */
 function maybePrefillBorrow(): void {
   if (state.borrowPrefilled) return;
   const market = state.borrowMarket;
@@ -427,13 +420,13 @@ function maybePrefillBorrow(): void {
     mcr: market.mcr,
     balance,
   });
-  const target = quote.suggestedCollateral * 2n;
-  // Never more than a tenth of the wallet: a prefilled field that exceeds the
-  // balance renders as an error before the user has typed anything, which
-  // reads as the page being broken rather than as a suggestion.
-  const capped = balance / 10n < target ? balance / 10n : target;
-  if (capped <= 0n) return;
-  state.borrowCollateral = formatUnits(capped, 18);
+  const target = startingCollateral(quote.suggestedCollateral, balance, GAS_ALLOWANCE);
+  // Zero means this wallet cannot cover the position at the ratio this page
+  // requires. Leaving the field empty is right: a prefilled figure that
+  // renders its own error before the user has typed anything reads as the
+  // page being broken rather than as a suggestion.
+  if (target <= 0n) return;
+  state.borrowCollateral = formatUnits(target, 18);
   state.borrowPrefilled = true;
 }
 
@@ -1373,11 +1366,19 @@ function renderBorrow(): void {
       balance,
     });
 
+    /* The same clamp as the prefill, so the two cannot disagree and so the
+       button never fills in a figure this wallet is then refused for. Zero
+       means it cannot: the button says so and disables itself rather than
+       being a click that does nothing, which is the worse of the two. */
+    const suggestion = startingCollateral(quote.suggestedCollateral, balance, GAS_ALLOWANCE);
+    suggestButton.disabled = suggestion <= 0n;
+    suggestButton.title =
+      suggestion > 0n
+        ? `Fill in ${formatAmount(suggestion, 18, 8)} ${mezoTestnet.nativeCurrency.symbol}, comfortably above the 150% this page requires`
+        : `This wallet cannot cover ${formatAmount(debt ?? market.minNetDebt, MUSD_DECIMALS, 0)} MUSD at a safe ratio. Borrow less, or claim more ${mezoTestnet.nativeCurrency.symbol}.`;
     suggestButton.onclick = () => {
-      // Twice the 150% figure, for the same reason the prefill doubles it.
-      const target = quote.suggestedCollateral * 2n;
-      if (target <= 0n) return;
-      state.borrowCollateral = formatUnits(target, 18);
+      if (suggestion <= 0n) return;
+      state.borrowCollateral = formatUnits(suggestion, 18);
       collateralInput.value = state.borrowCollateral;
       renderBorrowQuote();
     };
