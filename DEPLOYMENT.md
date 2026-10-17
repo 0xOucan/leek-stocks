@@ -255,6 +255,38 @@ Contents are documented in `feed/.env.example`. The two that matter:
 
 Never paste this file's contents into a commit, an issue or a chat message.
 
+## 4b. The dapp's build arguments, and why they are not in the registry
+
+Vite inlines every `VITE_*` value **at build time**, so these are properties
+of the image, not of the running container, and changing one means a rebuild.
+Nothing secret may be among them: they are all readable in the shipped
+JavaScript.
+
+Nothing in `leekdefi.env` passes them, and nothing in vpsinfra's deploy script
+does either — so **the defaults in `web/deploy/Dockerfile` are what ships**.
+Those defaults were placeholders until 2026-10-17: empty vault and share
+addresses and `VITE_MUSD` pointing at `0x118917a4…`, the MUSD the vaults
+reject. A deploy would have succeeded and served a dapp rendering "No contract
+addresses are configured in this build". They are now the live deployment.
+
+Two consequences worth holding on to:
+
+- **After any contract redeploy, the Dockerfile defaults must change too**, or
+  the site keeps serving the old addresses. It is the second place addresses
+  live; `ADDRESSES.md` is the first.
+- `npm run build` ends in `scripts/check-bundle.mjs`, which reads the built
+  bundle and fails if an address the app needs is absent or if any of the four
+  impostor MUSD contracts is present. Verified by building with the old
+  placeholders: six problems, exit 1. It skips itself when `VITE_CHAIN_ID` is
+  not 31611, so a rehearsal build against Anvil is not blocked by it.
+
+To override one without editing the Dockerfile:
+
+```sh
+# [VPS] if vpsinfra grows a build-args field, this is what belongs in it
+--build-arg VITE_MUSD=0x... --build-arg VITE_VAULT_GOLOGGLE=0x...
+```
+
 ## 5. Deploy
 
 ```sh
@@ -282,6 +314,14 @@ depends on the other to start.
       the gas token, and a price shows with its origin label. A price marked
       `synthetic` means the source was unreachable and the deterministic series
       is being published — correct behaviour, and it must say so on screen.
+- [ ] **The onboarding panel, end to end, from an empty wallet.** Claim BTC at
+      `faucet.test.mezo.org`, borrow MUSD in the page, approve, buy, redeem.
+      Each of those write paths is simulated in CI and in `cast`, and a wallet
+      signing them through the browser is a different thing from a simulation.
+- [ ] The wordmark renders in Space Grotesk, not the system sans. Its two
+      woff2 files were missing from `public/fonts` until 2026-10-17 and the
+      only symptom was a silent fallback; `test/assets.test.ts` now fails if a
+      declared font is absent.
 - [ ] No mixed-content or CSP violations in the browser console. A blocked
       `connect-src` is the likeliest first failure, and the template comments
       say what each entry is for.
