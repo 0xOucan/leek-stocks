@@ -11,8 +11,11 @@ import { createClient, defineChain, http, type Client } from "viem";
 import { CONFIG } from "./config.ts";
 
 export const mezoTestnet = defineChain({
-  id: 31_611,
+  id: CONFIG.chainId,
   name: "Mezo Testnet",
+  /* BTC, because Mezo charges gas in bitcoin rather than ether. A rehearsal
+     chain charges its own unit, but nothing here spends gas beyond fees and
+     the label is only ever shown next to a Mezo balance. */
   nativeCurrency: { name: "Test Bitcoin", symbol: "BTC", decimals: 18 },
   rpcUrls: { default: { http: [CONFIG.rpcUrl] } },
   blockExplorers: { default: { name: "Mezo Explorer", url: "https://explorer.test.mezo.org" } },

@@ -102,7 +102,28 @@ contract DeployMezoTestnet is Script {
         guardian = vm.envOr("GUARDIAN", deployer);
         treasurer = vm.envOr("TREASURER", deployer);
 
-        require(block.chainid == MEZO_TESTNET_CHAIN_ID, "wrong chain: expected Mezo testnet 31611");
+        /*
+         * The chain guard, with a named escape for a rehearsal.
+         *
+         * Refusing every chain but Mezo testnet meant the script that deploys
+         * production was not the script anybody could test: an end-to-end run
+         * on a local Anvil had to reimplement it, mirroring these constants by
+         * hand, which is precisely the drift the guard was meant to prevent.
+         * So the default is still a hard refusal, and ALLOW_CHAIN_ID is the
+         * only way past it - set deliberately, per run, and logged loudly, so
+         * a rehearsal cannot be mistaken for the real thing and a slip of the
+         * --rpc-url cannot quietly deploy somewhere else.
+         */
+        uint256 allowed = vm.envOr("ALLOW_CHAIN_ID", uint256(0));
+        if (allowed != 0 && allowed == block.chainid) {
+            console2.log("!! REHEARSAL: deploying to chain", block.chainid);
+            console2.log("!! ALLOW_CHAIN_ID was set. This is not Mezo testnet.");
+        } else {
+            require(
+                block.chainid == MEZO_TESTNET_CHAIN_ID,
+                "wrong chain: expected Mezo testnet 31611 (set ALLOW_CHAIN_ID to rehearse elsewhere)"
+            );
+        }
         // L-5, enforced rather than written on a checklist.
         require(
             IERC20Metadata(settlementToken).decimals() == EXPECTED_MUSD_DECIMALS,

@@ -58,6 +58,13 @@ export const MARKETS: readonly MarketConfig[] = [
 
 export const CONFIG = {
   rpcUrl: import.meta.env.VITE_RPC_URL ?? "https://rpc.test.mezo.org",
+  /*
+   * The chain id, which used to be a constant beside the RPC URL. That made
+   * VITE_RPC_URL a half-measure: reads followed it anywhere, and any write
+   * failed viem's chain assertion because the client still said 31611. A
+   * rehearsal against a local chain could therefore read but never buy.
+   */
+  chainId: Number(import.meta.env.VITE_CHAIN_ID ?? 31_611),
   /**
    * The feed's `/prices` endpoint. Relative by default, because Caddy proxies
    * `/prices` on this same host to the feed container: a same-origin request
