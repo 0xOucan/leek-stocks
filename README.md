@@ -29,6 +29,11 @@ both keys and what each can do are in [ADDRESSES.md](ADDRESSES.md).
 | Leeknding (lending) | written, 95 tests, 8 invariants, **not deployed** — `leek-lend` |
 | Air-gapped signing | the wallet draws Mezo transactions in BTC; the filmed demo is owed |
 
+> **Trying this?** [WALKTHROUGH.md](WALKTHROUGH.md) is the step-by-step, plus
+> the things that are awkward on this chain rather than broken — late
+> receipts, a single-digit repay ceiling, and why closing a position can be
+> refused for a few MUSD.
+
 ## The flow a tester follows
 
 All of it from the page, with no scripts and nothing from me. The front end
