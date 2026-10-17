@@ -17,3 +17,4 @@ out/
 broadcast/
 .env
 .gas-snapshot.tmp
+.venv/

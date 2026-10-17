@@ -58,7 +58,15 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
 
     /// @notice The settlement token. MUSD on Mezo.
     IERC20 public immutable musd;
-    /// @notice MUSD's own decimals, read at construction, never assumed.
+    /**
+     * @notice MUSD's own decimals, read at construction, never assumed.
+     * @dev Cached rather than read per call. MUSD is an upgradeable contract,
+     *      so in principle its decimals could change under a cached copy;
+     *      in practice an ERC-20 that changes decimals breaks every
+     *      integrator at once, and reading it on every price call would cost
+     *      an external call per trade. The cache is the deliberate choice and
+     *      the audit report records it.
+     */
     uint8 public immutable musdDecimals;
     /// @notice The index price feed.
     AggregatorV3Interface public immutable oracle;
@@ -155,7 +163,15 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         return raw / (10 ** (oracleDecimals - musdDecimals));
     }
 
-    /// @notice MUSD held on behalf of shareholders, excluding accrued fees.
+    /**
+     * @notice MUSD held on behalf of shareholders, excluding accrued fees.
+     * @dev Reads `balanceOf` rather than an internal counter, so MUSD sent
+     *      here directly counts as reserves. That is a donation, and the only
+     *      thing it can do is make redeemers better off: nothing mints
+     *      against this number, so it cannot be used to inflate a share price
+     *      or dilute a holder. `fund()` exists so that a deliberate top-up is
+     *      observable in an event rather than being a bare transfer.
+     */
     function reserves() public view returns (uint256) {
         uint256 balance = musd.balanceOf(address(this));
         return balance > feesAccrued ? balance - feesAccrued : 0;
@@ -211,7 +227,13 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
 
         uint256 p = price();
         uint256 gross = (shares * p) / SHARE_ONE;
-        uint256 fee = (gross * feeBps) / BPS;
+        // The fee comes from the undivided product rather than from `gross`,
+        // so the two divisions do not compound: dividing by SHARE_ONE first
+        // and then taking a fee of the result truncates twice, and slither's
+        // divide-before-multiply detector is right to say so. The widest
+        // operands this contract permits - shares bounded by maxShares and a
+        // price in token units - are many orders below uint256's ceiling.
+        uint256 fee = (shares * p * feeBps) / (SHARE_ONE * BPS);
         musdOut = gross - fee;
         if (musdOut == 0) revert ZeroAmount();
         if (musdOut < minMusd) revert Slippage(musdOut, minMusd);
@@ -240,7 +262,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      * @dev Fees only. Shareholder reserves are not reachable by any role, which
      *      is the one centralisation risk this contract does not carry.
      */
-    function withdrawFees(address to, uint256 amount) external onlyRole(TREASURER_ROLE) nonReentrant {
+    function withdrawFees(address to, uint256 amount) external nonReentrant onlyRole(TREASURER_ROLE) {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0 || amount > feesAccrued) revert ZeroAmount();
         feesAccrued -= amount;

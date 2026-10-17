@@ -13,9 +13,9 @@ loss. Low = best practice, latent bug. Info = no security impact.
 
 **Not an independent audit.** These findings were produced by the same process
 that wrote the contracts, which is worth less than an outside review and is
-recorded as such. `slither` has not been run: it is not installed on the
-build machine, and the testing checklist makes static analysis a gate before
-deployment. **That gate is open.**
+recorded as such. `slither` 0.11.6 has been run and its findings are
+in the Slither section below. The remaining open gate before deployment is a
+**fork test against the real MUSD on Mezo testnet**.
 
 ## Summary
 
@@ -27,8 +27,12 @@ deployment. **That gate is open.**
 | L-1 | Low | First published answer is unbounded | Accepted |
 | L-2 | Low | A fee-on-transfer or rebasing settlement token would break accounting | Mitigated by scope |
 | L-3 | Low | Redemption reverts rather than paying partially | By design |
+| L-4 | Low | `reserves()` counts donated MUSD | By design, documented |
+| L-5 | Low | MUSD's decimals are cached, and MUSD is upgradeable | Accepted, deploy-time check |
+| L-6 | Low | The fee rounds in the user's favour | Accepted |
 | I-1 | Info | Not ERC-4626, deliberately | — |
 | I-2 | Info | `price()` reverts, so reads are not fail-soft | By design |
+| I-3 | Info | Modifier order on `withdrawFees` | **Fixed** |
 
 ## H-1 A synthetic issuer is insolvent when the index rises
 
@@ -164,6 +168,84 @@ price is worse than being unavailable, and `fund()` — the path that makes
 redeemers whole — deliberately does **not** read the price, so a dead feed
 cannot block the backstop.
 
+## L-4 `reserves()` counts donated MUSD
+
+**Severity**: Low (accounting)
+**Category**: general (donation attacks)
+**Location**: `IssuanceVault.reserves()`
+
+**Description**: `reserves()` is `balanceOf(this) - feesAccrued`, so MUSD
+transferred in directly counts without passing through `fund()` and without an
+event.
+
+**Proof of Concept**: transfer MUSD to the vault; `reserves()` rises and
+`liabilities()` does not.
+
+**Recommendation**: kept, and the reason is written at the function. Nothing
+mints against this number — shares are priced by the oracle, not by the
+balance — so a donation cannot inflate a share price or dilute a holder; it
+can only make redeemers better off. This is why the ERC-4626 first-depositor
+inflation attack has no analogue here. `fund()` exists so a deliberate top-up
+is observable; an off-chain monitor should watch transfers as well.
+
+## L-5 MUSD's decimals are cached, and MUSD is upgradeable
+
+**Severity**: Low
+**Category**: erc20 / precision-math
+**Location**: `IssuanceVault` constructor, `musdDecimals`
+
+**Description**: `decimals()` is read once at construction. MUSD is an
+upgradeable contract (`initialize`, not a constructor), so a future
+implementation could in principle report different decimals while the vault
+keeps scaling by the old value, mispricing every trade by a power of ten.
+
+**Recommendation**: accepted. An ERC-20 that changes its decimals breaks every
+integrator simultaneously, and reading it per trade costs an external call on
+the hot path. Recorded so that the assumption is explicit rather than
+invisible. A deployment checklist item: confirm `decimals()` on the live MUSD
+immediately before deploying a vault against it.
+
+## L-6 The fee rounds in the user's favour
+
+**Severity**: Low
+**Category**: precision-math
+**Location**: `IssuanceVault.buy()`, `redeem()`
+
+**Description**: both fees divide down, so the protocol under-charges by up to
+one wei per trade. Shares minted and MUSD paid out also round down, which is
+in the protocol's favour, so the two directions do not combine into a dust
+extraction cycle: a buy-then-redeem round trip always loses, which
+`testFuzz_roundTripNeverProfits` asserts over 1000 runs.
+
+**Recommendation**: kept. Rounding the fee up would be more correct for a
+revenue-taking protocol and is a one-line change if this ever charges real
+fees.
+
+## I-3 Modifier order on `withdrawFees` (fixed)
+
+**Severity**: Info
+**Category**: general
+
+**Description**: `nonReentrant` was declared after `onlyRole`. The checklist
+requires the guard to be the first modifier, since earlier modifiers run
+before the lock is taken. A role check cannot re-enter, so nothing was
+exploitable, but the order is now guard-first.
+
+## Slither
+
+`slither . --filter-paths "lib|test"`, version 0.11.6, run on this commit.
+Nine results on the first pass; four addressed, five accepted. Re-running
+after the fixes leaves four, all accepted below:
+
+| Finding | Action |
+|---|---|
+| `divide-before-multiply` in `redeem` | **fixed.** The fee now comes from the undivided product, so the two divisions no longer compound |
+| `reentrancy-no-eth` / `-benign` in `deployETF` | **fixed.** Registry state is written before the calls into the newly deployed vault, so the function is Checks-Effects-Interactions whatever it grows into |
+| `reentrancy-events` in `deployETF` | **accepted.** `IndexDeployed` is emitted after the role handover because it announces a *finished* deployment; emitting it earlier would log a pair that is not yet configured. The callee is a contract constructed three lines above, so there is no untrusted code in the path |
+| `unindexed-event-address` on the factory's events | **fixed.** `oracle`, `share` and `vault` are indexed |
+| `timestamp` on `isFresh()` and `price()` | **accepted.** Staleness is a time comparison by definition; the tolerance is an hour, far beyond the drift a validator can manufacture |
+| `naming-convention` on `getRoundData(uint80 _roundId)` | **accepted.** The parameter name comes from Chainlink's published interface, and renaming it would make ours differ from the thing it is compatible with |
+
 ## Checklist status
 
 | Item | State |
@@ -178,8 +260,8 @@ cannot block the backstop.
 | Input validation: zero address, zero amount, empty string | done |
 | Events on every state change | done |
 | Unit + fuzz tests, 1000 runs | done, 34 tests |
-| Invariant tests | **owed** — the vault is stateful; a handler-based suite asserting reserves/liabilities bounds is the next test to write |
+| Invariant tests | done. Five invariants over a bounded handler (buy, redeem, fund, price moves inside the oracle's bound, time passing, fee withdrawal): fees never exceed the balance, MUSD is conserved across every path, the cap holds whatever the price did, supply is held only by actors the vault minted to, and the oracle never regresses. 256 runs x 8192 calls, zero reverts |
 | Fork test against real MUSD on Mezo testnet | **owed** before deployment |
 | Gas snapshot | done |
-| `slither`, no unaddressed high/medium | **owed — not installed** |
+| `slither`, no unaddressed high/medium | done; 0.11.6 installed in `.venv`. Four findings fixed, five accepted with reasons above. No high or medium outstanding |
 | Verified source after deploy | pending deployment |

@@ -56,14 +56,14 @@ contract ETFFactory is AccessControl {
 
     event IndexRegistered(
         string symbol,
-        address oracle,
+        address indexed oracle,
         uint32 maxStaleness,
         uint16 feeBps,
         uint256 maxShares,
         address guardian,
         address treasurer
     );
-    event IndexDeployed(string name, string symbol, address share, address vault);
+    event IndexDeployed(string name, string symbol, address indexed share, address indexed vault);
 
     error ZeroAddress();
     error EmptyString();
@@ -146,14 +146,18 @@ contract ETFFactory is AccessControl {
         );
         ETFShare shareToken = new ETFShare(name, symbol, admin, address(vault));
 
+        // Registry written before the calls into the new vault. Those calls
+        // are to a contract deployed two lines above, so re-entry is not
+        // reachable today, but ordering state first costs nothing and keeps
+        // the function Checks-Effects-Interactions whatever it grows into.
+        vaultFor[key] = address(vault);
+        vaults.push(address(vault));
+
         vault.setShare(shareToken);
         // Hand administration to the configured admin and step out of the way,
         // so the factory keeps no standing power over what it deployed.
         vault.grantRole(vault.DEFAULT_ADMIN_ROLE(), admin);
         vault.renounceRole(vault.DEFAULT_ADMIN_ROLE(), address(this));
-
-        vaultFor[key] = address(vault);
-        vaults.push(address(vault));
 
         emit IndexDeployed(name, symbol, address(shareToken), address(vault));
         return (address(shareToken), address(vault));
