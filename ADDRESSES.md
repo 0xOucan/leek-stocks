@@ -48,6 +48,7 @@ those chains use mock tokens under the `leek` prefix.
 | Network | Address | How verified | When |
 |---|---|---|---|
 | Mezo mainnet | `0x7B7c000000000000000000000000000000000001` | `symbol()` = MEZO, `decimals()` = 18 | 2026-10-16 |
+| **Mezo testnet (31611)** | `0x7B7c000000000000000000000000000000000001` | **same address as mainnet**: `symbol()` = `name()` = MEZO, `decimals()` = 18, `totalSupply()` = 1.2175e27, read on `rpc.test.mezo.org`. In the same precompile range as BTC at `0x7b7C…0000`, which is why it is identical across both networks. | 2026-10-17 |
 | Ethereum, Base, BSC | `0x8e4cbBcc33dB6c0a18561fDE1F6bA35906d4848b` | `symbol()` = MEZO on each chain's own RPC | 2026-10-16 |
 | Sepolia, Base Sepolia | same address, contract present | `eth_getCode` non-empty; symbol confirmed on Sepolia | 2026-10-16 |
 | BSC testnet | **none** | `eth_getCode` empty | 2026-10-16 |
