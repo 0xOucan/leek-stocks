@@ -70,7 +70,9 @@ export const FAUCET_ABI = [
  * the UI mirrors that rather than offering a button the contract will reject.
  * Listed by id because "this is a mainnet" is not something a chain id says.
  */
-const MAINNET_CHAIN_IDS = new Set([1, 10, 56, 137, 8453, 31_612, 42_161, 43_114]);
+const MAINNET_CHAIN_IDS = new Set([
+  1, 10, 56, 100, 137, 250, 324, 1101, 5000, 8453, 31_612, 34_443, 42_161, 43_114, 59_144, 81_457, 534_352,
+]);
 
 export function faucetAllowedOnChain(chainId: number): boolean {
   return !MAINNET_CHAIN_IDS.has(chainId);
