@@ -185,6 +185,32 @@ template can name `oucan-leekdefi-feed:8787` directly for the `/prices` route.
 Both repositories are private, so each needs a **read-only deploy key** on the
 VPS (step 6 of `docs/adding-projects.md`).
 
+## 3b. A key for the feed, and only for the feed
+
+The deploy put all four roles on one key, which the script warns about and
+which is fine for getting a testnet up. It is **not** fine for the feed: that
+process signs continuously, so its key has to sit in a file on a server, and
+the deployer key holds admin, guardian and treasurer on everything deployed. A
+compromised server would then be able to pause the feed, move the fees and
+reconfigure the vaults, rather than only push prices inside an immutable
+per-round bound — which is all `PUBLISHER_ROLE` can do.
+
+```sh
+cast wallet new                                      # [LOCAL] a key for this and nothing else
+./scripts/grant-publisher.sh 0xTheNewAddress         # grant it the role
+./scripts/grant-publisher.sh 0xTheNewAddress --revoke-deployer
+cast send 0xTheNewAddress --value 0.005ether --rpc-url https://rpc.test.mezo.org \
+  --account monad-deployer                           # gas: ~130 wei a unit here
+```
+
+`--revoke-deployer` drops the deployer's own publisher rights. It keeps
+`DEFAULT_ADMIN_ROLE`, so it can always grant them back; what it loses is the
+ability to move a price quietly, which is the point.
+
+The grant is confirmed by **reading `hasRole` until it answers true**, not by
+waiting for a receipt, for the reason in the previous section: a receipt here
+can be minutes late and `cast send` reports a failure that did not happen.
+
 ## 4. The feed's secrets
 
 ```sh
