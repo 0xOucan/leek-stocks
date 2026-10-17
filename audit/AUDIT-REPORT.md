@@ -23,6 +23,7 @@ checklist row below for what it proves.
 | ID | Severity | Title | Status |
 |---|---|---|---|
 | H-1 | High | A synthetic issuer is insolvent when the index rises | **Accepted, bounded, documented** |
+| H-1a | High | Nobody is paid to fund the backstop | Accepted for testnet, named |
 | M-1 | Medium | The oracle is a single operator | Accepted, documented |
 | M-2 | Medium | The admin may raise the share cap without limit | Accepted |
 | L-1 | Low | First published answer is unbounded | Accepted |
@@ -32,6 +33,7 @@ checklist row below for what it proves.
 | L-5 | Low | MUSD's decimals are cached, and MUSD is upgradeable | Accepted, deploy-time check |
 | L-6 | Low | The fee rounds in the user's favour | Accepted |
 | I-1 | Info | Not ERC-4626, deliberately | — |
+| I-4 | Info | Flash loans cannot move this oracle | — |
 | I-2 | Info | `price()` reverts, so reads are not fail-soft | By design |
 | I-3 | Info | Modifier order on `withdrawFees` | **Fixed** |
 
@@ -60,6 +62,44 @@ whole. `reserves()` and `liabilities()` are public so the gap is visible
 before anyone commits. A real version needs a funded counterparty — the Wave 2
 lending market, or a hedged reserve — and the README must say that it is a
 testnet demonstration of issuance and hardware signing, not a fund.
+
+## H-1a Nobody is paid to fund the backstop
+
+**Severity**: High (incentive, inseparable from H-1)
+**Category**: general / protocol design
+**Location**: `IssuanceVault.fund()`
+
+**Description**: H-1's mitigation is that a treasury may top up reserves with
+`fund()`. But a contract is a state machine that only advances when somebody
+pays gas to advance it, and `fund()` pays its caller nothing. So the mitigation
+depends on goodwill, which is not a mechanism. If the index rallies and no one
+funds, redemption stays reverted and holders are stuck with an asset they
+cannot exit.
+
+**Proof of Concept**: `test_redeemRevertsWhenReservesAreShort` shows the
+revert, and the recovery in that test happens only because the test itself
+calls `fund()`. On chain, nothing makes that call happen.
+
+**Recommendation**: for a testnet demonstration, accepted and stated: the
+operator funds it, and the README says the thing is not a fund. For anything
+real the backstop must be a mechanism rather than a habit — fees routed to
+reserves until a target ratio is met, or a funded counterparty such as the
+lending market taking the other side of the exposure. Design that before
+anyone's money is at stake, not after.
+
+## I-4 Flash loans cannot move this oracle
+
+**Severity**: Info
+**Category**: oracles / flashloans
+
+**Description**: The flash-loan attack that dominates DeFi oracle incidents —
+borrow, move a pool, read the moved price, repay, all in one transaction —
+does not apply here, and it is worth writing down why rather than leaving it
+to be rediscovered. The price is **pushed** by an off-chain publisher, so it
+cannot be moved inside a transaction at all: no pool, no reserves, no
+`getReserves()`, no spot read. What replaces that risk is the publisher
+itself, which is M-1. Any future change that derives a price from on-chain
+liquidity reintroduces the whole class, and would need a TWAP at minimum.
 
 ## M-1 The oracle is a single operator
 

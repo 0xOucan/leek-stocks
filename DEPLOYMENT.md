@@ -62,10 +62,28 @@ forge script script/DeployMezoTestnet.s.sol \
   --broadcast
 ```
 
-Afterwards: record every address in this repository, verify the sources on
-`explorer.test.mezo.org`, and confirm the first oracle round published (the
-script does it in the same reviewed step, so that a feed's first answer is
-never the unbounded one — finding L-1).
+Afterwards, in order:
+
+```sh
+# [LOCAL] Record the addresses in ADDRESSES.md with the date, then prove each
+# one is a contract rather than a plausible-looking string. An address with no
+# code accepts a transfer and loses it, silently.
+cast code <address> --rpc-url https://rpc.test.mezo.org | head -c 20
+
+# [LOCAL] Verify the sources. Mezo's explorer is Blockscout, so the verifier
+# is blockscout and the URL ends in /api, not the explorer's front page.
+forge verify-contract <address> src/IndexOracle.sol:IndexOracle   --chain-id 31611   --verifier blockscout   --verifier-url https://explorer.test.mezo.org/api   --watch
+```
+
+Then confirm the first oracle round published — the script does it in the same
+reviewed step, so a feed's first answer is never the unbounded one (finding
+L-1) — and that `vaultFor` resolves for both symbols.
+
+**On keys, and a deliberate divergence.** The ethskills tools guide's own
+example passes `--private-key` on the command line. We do not: a command line
+is visible in `ps` to every user on the machine and lands in shell history, so
+every invocation here uses `--account` and types the password into a prompt.
+The guide is right about the toolchain and wrong about that one habit.
 
 ## 2. Cloudflare
 
