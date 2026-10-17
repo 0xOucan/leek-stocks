@@ -362,20 +362,27 @@ contract LeekStakingTest is Test {
            money taken from whoever withdraws last. */
         assertLe(owed, musd.balanceOf(address(staking)));
 
-        /* Proportionality is only meaningful once a stake is large enough that
-           the per-share truncation is not most of the answer. At a stake of a
-           few thousand wei the division in `accMusdPerShare` dominates, and a
-           tight tolerance there would be asserting that integer division does
-           not round - which it does. 1e12 wei of MEZO is the floor below which
-           this says nothing; the solvency check above still covers it. */
-        /* The same limit applies to the revenue: `accMusdPerShare` is
-           `revenue * 1e18 / supply`, so a tiny revenue against a large stake
-           truncates most of its own precision away before it is ever split.
-           For 0.01% accuracy that quotient needs roughly 1e4 of headroom,
-           and 1e12 wei against a supply capped at 2e21 leaves 1e9. */
-        if (aliceStake >= 1e12 && bobStake >= 1e12 && revenue >= 1e12 && staking.pending(bob) > 0) {
+        /* Proportionality is asserted only where it is measurable.
+           
+           The tolerance is 1e-4 relative, and each holder's `pending` is a
+           floored quantity, so the comparison is meaningless unless both
+           pendings are large enough that one wei of truncation sits well
+           inside that tolerance. Gating on the stakes or on the revenue - my
+           first two attempts - gates on the wrong quantity: what matters is
+           the size of the result, not of the inputs, because a large stake
+           and a large revenue can still produce a small per-holder pending
+           when the supply is larger still. 1e6 wei gives 1e-6 relative
+           error against a 1e-4 tolerance, two orders of margin.
+           
+           Solvency above is asserted unconditionally at every magnitude, and
+           it is the property that actually protects anybody; this one is a
+           statement about fairness in the range where fairness is
+           expressible. */
+        uint256 pendingAlice = staking.pending(alice);
+        uint256 pendingBob = staking.pending(bob);
+        if (pendingAlice >= 1e6 && pendingBob >= 1e6) {
             assertApproxEqRel(
-                (staking.pending(alice) * 1e18) / staking.pending(bob),
+                (pendingAlice * 1e18) / pendingBob,
                 (aliceStake * 1e18) / bobStake,
                 1e14 // 0.01%
             );

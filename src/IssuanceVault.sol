@@ -7,6 +7,7 @@ import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {ILeekStaking} from "./interfaces/ILeekStaking.sol";
 import {ETFShare} from "./ETFShare.sol";
 
 /**
@@ -53,6 +54,15 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
 
     /// @notice Largest fee the deployer may set, in basis points. 5%.
     uint16 public constant MAX_FEE_BPS = 500;
+    /**
+     * @notice Most of a fee a staking discount may ever waive. 50%.
+     * @dev Mirrors LeekStaking's own cap and is enforced here as well, so the
+     *      vault's fee floor does not depend on a contract the admin can
+     *      repoint. Part of every fee is the reserve top-up that keeps
+     *      redemption solvent, and a 100% discount would let a large staker
+     *      trade without contributing to it at all.
+     */
+    uint16 public constant MAX_DISCOUNT_BPS = 5_000;
     uint256 private constant BPS = 10_000;
     uint256 private constant SHARE_ONE = 1e18;
 
@@ -99,11 +109,25 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     /// @notice True while buying and redeeming are halted.
     bool public paused;
 
+    /**
+     * @notice Where the treasury share of each fee goes, if anywhere.
+     *
+     * @dev Zero disables the whole mechanism and the fee accrues to
+     *      `feesAccrued` exactly as before, which is the state every vault
+     *      deploys in. Settable rather than immutable because the staking
+     *      contract is deployed after the vaults it earns from, and a vault
+     *      that had to know its address at construction could never be the
+     *      first thing deployed.
+     */
+    ILeekStaking public staking;
+
     event Bought(address indexed buyer, uint256 musdIn, uint256 fee, uint256 sharesOut, uint256 price);
     event Redeemed(address indexed holder, uint256 sharesIn, uint256 fee, uint256 musdOut, uint256 price);
     event Funded(address indexed from, uint256 amount);
     event FeesWithdrawn(address indexed to, uint256 amount);
     event FeeSet(uint16 feeBps);
+    event StakingSet(address staking);
+    event RevenueRouted(uint256 amount);
     event ReserveShareSet(uint16 reserveShareBps);
     event ReservesTopped(uint256 amount, uint256 reservesAfter);
     event MaxSharesSet(uint256 maxShares);
@@ -215,7 +239,10 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         if (musdAmount == 0) revert ZeroAmount();
 
         uint256 p = price();
-        uint256 fee = (musdAmount * feeBps) / BPS;
+        // The caller's own fee, so a staker's discount applies to their trade
+        // and to nobody else's. Read once and reused for the split below.
+        uint16 fee_ = effectiveFeeBps(msg.sender);
+        uint256 fee = (musdAmount * fee_) / BPS;
         uint256 net = musdAmount - fee;
         sharesOut = (net * SHARE_ONE) / p;
         if (sharesOut == 0) revert ZeroAmount();
@@ -228,13 +255,74 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
            so the split does not compound the fee's own truncation. The
            treasury's half is the remainder, which keeps the two halves
            summing to exactly `fee` with no wei stranded in neither pot. */
-        uint256 toReserves = (musdAmount * feeBps * reserveShareBps) / (BPS * BPS);
-        feesAccrued += fee - toReserves;
+        uint256 toReserves = (musdAmount * fee_ * reserveShareBps) / (BPS * BPS);
         musd.safeTransferFrom(msg.sender, address(this), musdAmount);
         share.mint(msg.sender, sharesOut);
         if (toReserves != 0) emit ReservesTopped(toReserves, reserves());
 
         emit Bought(msg.sender, musdAmount, fee, sharesOut, p);
+        /* Last, after the mint and after the event: routing makes an external
+           call into the staking contract, so it goes at the end of the
+           checks-effects-interactions order rather than in the middle of
+           issuing shares. `nonReentrant` already holds. */
+        _routeRevenue(fee - toReserves);
+    }
+
+    /**
+     * @notice Point the treasury share of each fee at a staking contract.
+     * @dev Zero unsets it, which is the safe fallback: revenue goes back to
+     *      `feesAccrued` and nothing else changes. No validation of the target
+     *      beyond that, deliberately - a wrong address here would be caught by
+     *      the first buy reverting, which is louder than a check that passes
+     *      on any contract exposing three functions.
+     */
+    function setStaking(ILeekStaking next) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        staking = next;
+        emit StakingSet(address(next));
+    }
+
+    /**
+     * @notice The fee `account` actually pays, after any staking discount.
+     *
+     * @dev A view, so a front end quotes the same number the trade will
+     *      charge. The discount is read from the staking contract rather than
+     *      stored here, so a stake made one block ago counts.
+     *
+     *      Bounded twice over: the staking contract caps a tier at half the
+     *      fee, and this clamps anything larger regardless. Trusting the other
+     *      contract's cap alone would make the vault's own fee floor depend on
+     *      whatever address the admin last pointed at.
+     */
+    function effectiveFeeBps(address account) public view returns (uint16) {
+        uint16 base = feeBps;
+        if (address(staking) == address(0) || base == 0) return base;
+
+        uint16 discount = staking.discountBpsFor(account);
+        if (discount > MAX_DISCOUNT_BPS) discount = MAX_DISCOUNT_BPS;
+        // Multiply before dividing; the result is at most `base`, so the
+        // narrowing cast cannot truncate.
+        return uint16(base - (uint256(base) * discount) / BPS);
+    }
+
+    /**
+     * @dev Hand `amount` of MUSD to the stakers, or keep it as fee revenue.
+     *
+     *      Routed only when there is a staking contract, the amount is
+     *      non-zero and somebody is actually staked. That last condition is
+     *      the empty-state decision: `notifyReward` refuses a distribution to
+     *      a zero supply rather than stranding the MUSD or handing it to
+     *      whoever stakes first, so the vault must not send it in that case.
+     *      An unstaked period simply leaves the fee as revenue here.
+     */
+    function _routeRevenue(uint256 amount) private {
+        if (amount == 0) return;
+        if (address(staking) == address(0) || staking.totalSupply() == 0) {
+            feesAccrued += amount;
+            return;
+        }
+        musd.safeTransfer(address(staking), amount);
+        staking.notifyReward();
+        emit RevenueRouted(amount);
     }
 
     /* -------------------------------------------------------------- redeeming */
@@ -246,11 +334,12 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      the contract notes. The share burn happens before the payout, so a
      *      token that re-enters on transfer finds the supply already reduced.
      */
-    function redeem(uint256 shares, uint256 minMusd) external nonReentrant returns (uint256 musdOut) {
+    function redeem(uint256 shares, uint256 minMusd) public nonReentrant returns (uint256 musdOut) {
         if (paused) revert VaultPaused();
         if (shares == 0) revert ZeroAmount();
 
         uint256 p = price();
+        uint16 fee_ = effectiveFeeBps(msg.sender);
         uint256 gross = (shares * p) / SHARE_ONE;
         // The fee comes from the undivided product rather than from `gross`,
         // so the two divisions do not compound: dividing by SHARE_ONE first
@@ -258,7 +347,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         // divide-before-multiply detector is right to say so. The widest
         // operands this contract permits - shares bounded by maxShares and a
         // price in token units - are many orders below uint256's ceiling.
-        uint256 fee = (shares * p * feeBps) / (SHARE_ONE * BPS);
+        uint256 fee = (shares * p * fee_) / (SHARE_ONE * BPS);
         musdOut = gross - fee;
         if (musdOut == 0) revert ZeroAmount();
         if (musdOut < minMusd) revert Slippage(musdOut, minMusd);
@@ -268,13 +357,48 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
 
         // Same treatment as in buy(): the undivided product, so the two
         // divisions do not stack.
-        uint256 toReserves = (shares * p * feeBps * reserveShareBps) / (SHARE_ONE * BPS * BPS);
-        feesAccrued += fee - toReserves;
+        uint256 toReserves = (shares * p * fee_ * reserveShareBps) / (SHARE_ONE * BPS * BPS);
         share.burnFrom(msg.sender, shares);
         musd.safeTransfer(msg.sender, musdOut);
         if (toReserves != 0) emit ReservesTopped(toReserves, reserves());
 
         emit Redeemed(msg.sender, shares, fee, musdOut, p);
+        _routeRevenue(fee - toReserves);
+    }
+
+    /**
+     * @notice Redeem in one transaction, authorising the share burn by signature.
+     *
+     * @dev Two transactions to sell was the sharpest edge in the walkthrough:
+     *      a tester approves, waits, then redeems, and on a chain whose
+     *      receipts lag by minutes the gap reads as the first one having
+     *      failed. `ETFShare` is an `ERC20Permit`, so the authorisation can
+     *      travel as a signature in the same transaction instead.
+     *
+     *      The permit is submitted by this contract rather than by the caller
+     *      so that the allowance it creates is consumed by `redeem` in the
+     *      same call and cannot be left standing. A permit that has already
+     *      been used - a replay, or a second attempt after a first succeeded -
+     *      reverts inside `ERC20Permit` on the nonce, which is the behaviour
+     *      wanted: it does not silently continue with whatever allowance
+     *      happens to exist.
+     *
+     *      It also matters for the hardware wallet this project exists to
+     *      exercise: a permit is EIP-712 typed data, which the device signs
+     *      and displays, rather than a second blind approval.
+     */
+    function redeemWithPermit(
+        uint256 shares,
+        uint256 minMusd,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 musdOut) {
+        // `permit` reverts on a bad signature, a used nonce or a passed
+        // deadline, so there is nothing to check here that it does not.
+        share.permit(msg.sender, address(this), shares, deadline, v, r, s);
+        return redeem(shares, minMusd);
     }
 
     /* ------------------------------------------------------------ management */

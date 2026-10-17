@@ -1,0 +1,308 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {IndexOracle} from "../src/IndexOracle.sol";
+import {ETFFactory} from "../src/ETFFactory.sol";
+import {ETFShare} from "../src/ETFShare.sol";
+import {IssuanceVault} from "../src/IssuanceVault.sol";
+import {LeekStaking} from "../src/LeekStaking.sol";
+import {ILeekStaking} from "../src/interfaces/ILeekStaking.sol";
+import {MockMUSD} from "./mocks/MockMUSD.sol";
+
+/**
+ * The vault's half of the staking mechanism.
+ *
+ * The properties here are the ones where a mistake moves money between two
+ * groups of users: that a discount reaches only the trader who earned it, that
+ * the reserve top-up is never the part that gets discounted away, that revenue
+ * reaches stakers rather than the treasury once routing is on, and that an
+ * unstaked period cannot strand a fee.
+ */
+contract IssuanceVaultStakingTest is Test {
+    MockMUSD musd;
+    MockMUSD mezo;
+    IndexOracle oracle;
+    ETFFactory factory;
+    ETFShare share;
+    IssuanceVault vault;
+    LeekStaking staking;
+
+    address admin = makeAddr("admin");
+    address publisher = makeAddr("publisher");
+    address guardian = makeAddr("guardian");
+    address treasury = makeAddr("treasury");
+    address alice = makeAddr("alice");
+    address bob = makeAddr("bob");
+
+    uint16 constant FEE_BPS = 50;
+    uint16 constant RESERVE_SHARE_BPS = 5000;
+    int256 constant PRICE = 200e8;
+    uint256 constant ONE = 1e18;
+
+    function setUp() public {
+        vm.warp(1_700_000_000);
+        musd = new MockMUSD(18);
+        mezo = new MockMUSD(18);
+        oracle = new IndexOracle("GOLOGGLE / MUSD", 8, 2000, 1 hours, admin, publisher, guardian);
+        vm.prank(publisher);
+        oracle.publish(PRICE);
+
+        factory = new ETFFactory(IERC20(address(musd)), admin);
+        vm.prank(admin);
+        factory.registerIndex("GOLOGGLE", oracle, 1 hours, FEE_BPS, RESERVE_SHARE_BPS, 1_000_000e18, guardian, treasury);
+        (address shareAddress, address vaultAddress) = factory.deployETF("Gologgle Index", "GOLOGGLE");
+        share = ETFShare(shareAddress);
+        vault = IssuanceVault(vaultAddress);
+
+        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin);
+
+        LeekStaking.Tier[] memory tiers = new LeekStaking.Tier[](2);
+        tiers[0] = LeekStaking.Tier(100 * ONE, 2_000); // 20% off
+        tiers[1] = LeekStaking.Tier(1_000 * ONE, 5_000); // 50% off
+        vm.startPrank(admin);
+        staking.setTiers(tiers);
+        vault.setStaking(ILeekStaking(address(staking)));
+        vm.stopPrank();
+
+        for (uint256 i = 0; i < 2; ++i) {
+            address who = i == 0 ? alice : bob;
+            musd.mint(who, 1_000_000e18);
+            mezo.mint(who, 10_000 * ONE);
+            vm.startPrank(who);
+            musd.approve(address(vault), type(uint256).max);
+            mezo.approve(address(staking), type(uint256).max);
+            vm.stopPrank();
+        }
+    }
+
+    function _stake(address who, uint256 amount) internal {
+        vm.prank(who);
+        staking.stake(amount);
+    }
+
+    /* ---------------------------------------------------------- discounts */
+
+    function test_withoutStakingTheFeeIsUnchanged() public {
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(0)));
+        assertEq(vault.effectiveFeeBps(alice), FEE_BPS);
+    }
+
+    function test_aNonStakerPaysTheFullFeeAndCanStillBuy() public {
+        assertEq(vault.effectiveFeeBps(alice), FEE_BPS);
+        vm.prank(alice);
+        uint256 shares = vault.buy(1_000e18, 0);
+        // 0.5% fee, 200 per share: 995 / 200 = 4.975 shares.
+        assertEq(shares, 4.975e18);
+    }
+
+    function test_aStakerPaysLess() public {
+        _stake(alice, 100 * ONE);
+        assertEq(vault.effectiveFeeBps(alice), 40); // 20% off 50
+        _stake(alice, 900 * ONE);
+        assertEq(vault.effectiveFeeBps(alice), 25); // 50% off 50
+    }
+
+    function test_theDiscountReachesOnlyTheTraderWhoEarnedIt() public {
+        _stake(alice, 1_000 * ONE);
+        assertEq(vault.effectiveFeeBps(alice), 25);
+        assertEq(vault.effectiveFeeBps(bob), FEE_BPS);
+
+        vm.prank(alice);
+        uint256 aliceShares = vault.buy(1_000e18, 0);
+        vm.prank(bob);
+        uint256 bobShares = vault.buy(1_000e18, 0);
+        assertGt(aliceShares, bobShares, "the staker did not get more shares for the same MUSD");
+    }
+
+    function test_theVaultClampsADiscountEvenIfTheStakingContractDoesNot() public {
+        // A staking contract that lies about its cap must not be able to zero
+        // the fee, because part of the fee is the reserve top-up.
+        LyingStaking liar = new LyingStaking();
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(liar)));
+        // 10_000 bps claimed, clamped to 5_000: half of 50 is 25.
+        assertEq(vault.effectiveFeeBps(alice), 25);
+    }
+
+    function test_aDiscountNeverEatsTheReserveTopUp() public {
+        uint256 reservesBefore = vault.reserves();
+        _stake(alice, 1_000 * ONE); // the deepest discount
+        vm.prank(alice);
+        vault.buy(1_000e18, 0);
+        // Half of the (discounted) fee still reaches reserves: 1000 * 25bps
+        // = 2.5, half of which is 1.25.
+        assertEq(vault.reserves() - reservesBefore, 1_000e18 - 2.5e18 + 1.25e18);
+    }
+
+    /* ------------------------------------------------------------ routing */
+
+    function test_revenueReachesStakersInsteadOfTheTreasury() public {
+        _stake(bob, 100 * ONE);
+
+        vm.prank(alice);
+        vault.buy(1_000e18, 0);
+
+        // Alice is not staked, so she paid the full 50 bps = 5 MUSD. Half to
+        // reserves, half routed: 2.5 MUSD to Bob, and nothing to the treasury.
+        assertEq(vault.feesAccrued(), 0, "revenue stayed with the treasury");
+        assertEq(staking.pending(bob), 2.5e18);
+    }
+
+    function test_withNobodyStakedTheFeeStaysWithTheTreasury() public {
+        assertEq(staking.totalSupply(), 0);
+        vm.prank(alice);
+        vault.buy(1_000e18, 0);
+        // Not routed, not stranded: exactly the old behaviour.
+        assertEq(vault.feesAccrued(), 2.5e18);
+        assertEq(musd.balanceOf(address(staking)), 0);
+    }
+
+    function test_redeemRoutesRevenueToo() public {
+        vm.prank(alice);
+        uint256 shares = vault.buy(10_000e18, 0);
+        _stake(bob, 100 * ONE);
+
+        vm.startPrank(alice);
+        share.approve(address(vault), shares);
+        vault.redeem(shares, 0);
+        vm.stopPrank();
+
+        assertGt(staking.pending(bob), 0, "redeeming produced no revenue for stakers");
+    }
+
+    function test_routingSurvivesTheStakersAllLeaving() public {
+        _stake(bob, 100 * ONE);
+        vm.prank(alice);
+        vault.buy(1_000e18, 0);
+
+        vm.prank(bob);
+        staking.unstake(100 * ONE);
+        assertEq(staking.totalSupply(), 0);
+
+        // The next trade must not revert on NoStakers.
+        vm.prank(alice);
+        vault.buy(1_000e18, 0);
+        assertEq(vault.feesAccrued(), 2.5e18);
+    }
+
+    function test_onlyTheAdminPointsTheVaultAtAStakingContract() public {
+        bytes32 role = vault.DEFAULT_ADMIN_ROLE();
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.setStaking(ILeekStaking(address(0)));
+        assertTrue(vault.hasRole(role, admin));
+    }
+
+    /* ------------------------------------------------- one-transaction sell */
+
+    function test_redeemWithPermitNeedsNoSeparateApproval() public {
+        (address owner, uint256 key) = makeAddrAndKey("permitter");
+        musd.mint(owner, 10_000e18);
+        vm.startPrank(owner);
+        musd.approve(address(vault), type(uint256).max);
+        uint256 shares = vault.buy(10_000e18, 0);
+        vm.stopPrank();
+
+        assertEq(share.allowance(owner, address(vault)), 0, "the test is not proving anything");
+
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, _permitDigest(owner, shares, deadline));
+
+        uint256 before = musd.balanceOf(owner);
+        vm.prank(owner);
+        uint256 out = vault.redeemWithPermit(shares, 0, deadline, v, r, s);
+
+        assertEq(musd.balanceOf(owner) - before, out);
+        assertEq(share.balanceOf(owner), 0);
+        // The allowance the permit created was consumed, not left standing.
+        assertEq(share.allowance(owner, address(vault)), 0);
+    }
+
+    function test_aReplayedPermitReverts() public {
+        (address owner, uint256 key) = makeAddrAndKey("permitter");
+        musd.mint(owner, 10_000e18);
+        vm.startPrank(owner);
+        musd.approve(address(vault), type(uint256).max);
+        uint256 shares = vault.buy(10_000e18, 0);
+        vm.stopPrank();
+
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, _permitDigest(owner, shares / 2, deadline));
+
+        vm.prank(owner);
+        vault.redeemWithPermit(shares / 2, 0, deadline, v, r, s);
+
+        // The nonce is spent, so the same signature cannot sell the rest.
+        vm.prank(owner);
+        vm.expectRevert();
+        vault.redeemWithPermit(shares / 2, 0, deadline, v, r, s);
+    }
+
+    function test_anExpiredPermitReverts() public {
+        (address owner, uint256 key) = makeAddrAndKey("permitter");
+        musd.mint(owner, 10_000e18);
+        vm.startPrank(owner);
+        musd.approve(address(vault), type(uint256).max);
+        uint256 shares = vault.buy(10_000e18, 0);
+        vm.stopPrank();
+
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, _permitDigest(owner, shares, deadline));
+        vm.warp(deadline + 1);
+
+        vm.prank(owner);
+        vm.expectRevert();
+        vault.redeemWithPermit(shares, 0, deadline, v, r, s);
+    }
+
+    function _permitDigest(address owner, uint256 value, uint256 deadline) internal view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"),
+                owner,
+                address(vault),
+                value,
+                share.nonces(owner),
+                deadline
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", share.DOMAIN_SEPARATOR(), structHash));
+    }
+
+    /* --------------------------------------------------------------- fuzz */
+
+    function testFuzz_aDiscountNeverTakesTheFeeBelowHalf(uint16 claimed) public {
+        LyingStaking liar = new LyingStaking();
+        liar.setDiscount(claimed);
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(liar)));
+
+        uint16 effective = vault.effectiveFeeBps(alice);
+        assertLe(effective, FEE_BPS);
+        assertGe(effective, FEE_BPS / 2, "a fee below half the base starves the reserve top-up");
+    }
+}
+
+/// A staking contract that ignores its own discount cap.
+contract LyingStaking {
+    uint16 private discount = 10_000;
+
+    function setDiscount(uint16 next) external {
+        discount = next;
+    }
+
+    function discountBpsFor(address) external view returns (uint16) {
+        return discount;
+    }
+
+    function totalSupply() external pure returns (uint256) {
+        return 0;
+    }
+
+    function notifyReward() external pure returns (uint256) {
+        return 0;
+    }
+}
