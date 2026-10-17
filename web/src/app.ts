@@ -137,7 +137,11 @@ export function mount(): void {
            implies something to click. */
         el("p", { class: "tagline" }, ["Parody index tokens, settled in MUSD \u00b7 part of LeekDefi"]),
         el("p", { class: "muted small" }, [
-          "Parody index tokens, settled in MUSD on Mezo testnet. Not securities, not backed by anything.",
+          /* The chain comes from the chain, not from this sentence. On a
+             rehearsal chain the settlement token is a mock and saying "on
+             Mezo testnet" was the last place the page still asserted where it
+             was running. The disclaimers after it are true everywhere. */
+          `Parody index tokens, settled in MUSD on ${mezoTestnet.name}. Not securities, not backed by anything.`,
         ]),
       ]),
       sections.wallet,
