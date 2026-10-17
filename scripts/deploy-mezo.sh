@@ -39,6 +39,20 @@ got=$(cast chain-id --rpc-url "$RPC")
 [[ "$got" == "$CHAIN" ]] || fail "chain id is $got, expected $CHAIN"
 echo "   chain id $got, base fee $(cast base-fee --rpc-url "$RPC") wei"
 
+say "previous attempts"
+# An abandoned contract from a failed run is harmless but confusing: the
+# addresses in a half-finished log are the ones simulation predicted, not what
+# exists. Say so plainly rather than letting someone record them.
+NONCE=$(cast nonce "$(cast wallet address --account "$ACCOUNT" 2>/dev/null || echo 0x0000000000000000000000000000000000000000)" --rpc-url "$RPC" 2>/dev/null || echo 0)
+if [[ "$NONCE" != "0" ]]; then
+  cat <<WARN
+   This account has sent $NONCE transaction(s) before. If an earlier deploy
+   failed part-way, whatever it left behind is orphaned: a fresh run deploys
+   fresh contracts at new addresses, and only the final log's addresses are
+   real. Record nothing from a failed run.
+WARN
+fi
+
 say "the deployer"
 # Asked of the keystore rather than assumed, because deploying from the wrong
 # address is a mistake that is only obvious afterwards. This prompts for the
@@ -94,11 +108,21 @@ read -r -p "Type yes to deploy: " answer
 [[ "$answer" == "yes" ]] || fail "not confirmed"
 
 say "deploying"
+# --slow sends one transaction at a time and waits for each receipt.
+#
+# Not a precaution: without it this deploy fails on Mezo. Foundry pipelines
+# broadcasts by signing several transactions with consecutive nonces and
+# sending them together, which an Ethereum mempool queues by nonce. Mezo is
+# Cosmos-based - mezod is a fork of Evmos - and its ante handler checks the
+# account *sequence* on arrival instead, so a transaction that turns up with
+# sequence 1 while the account is still at 0 is rejected outright rather than
+# held: "invalid nonce; got 1, expected 0: invalid sequence". The first run
+# here landed one contract and lost the rest to exactly that.
 SETTLEMENT_TOKEN="$MUSD" forge script script/DeployMezoTestnet.s.sol \
   --rpc-url "$RPC" \
   --account "$ACCOUNT" \
   --sender "$SENDER" \
-  --broadcast \
+  --broadcast --slow \
   --verify --verifier blockscout --verifier-url "$VERIFIER_URL" \
   | tee /tmp/leekstonks-mezo-deploy.log
 
