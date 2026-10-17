@@ -47,6 +47,11 @@
         #                        elements. Scoped to attributes rather than
         #                        opened in style-src, so an injected <style>
         #                        block is still refused.
+        #                        Reviewed and kept deliberately: the
+        #                        alternative is a visibly broken modal, and
+        #                        the narrower directive is the whole point of
+        #                        style-src-attr existing. Revisit it the day
+        #                        the modal stops needing it, not before.
         #   img-src 'self' data: https://explorer-api.walletconnect.com
         #                        EIP-6963 wallets announce their icon as a
         #                        data: URI, which is where every extension
