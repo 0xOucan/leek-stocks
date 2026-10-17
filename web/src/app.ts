@@ -119,6 +119,25 @@ const MIN_MUSD = 10n ** 18n;
 /** What the borrow form starts at: the protocol's own minimum. */
 const DEFAULT_BORROW = "1800";
 
+/**
+ * A message shown after an action, with the transaction it is about.
+ *
+ * `hash` is set on every outcome of a signature - sent, confirmed and
+ * reverted - because the hash is the only thing that lets the user, or
+ * anyone helping them, see what actually happened on chain.
+ */
+type TxMessage = {
+  kind: "error" | "ok";
+  text: string;
+  name?: string;
+  /**
+   * Undefined when there is no transaction to link: a rejected signature, or
+   * a check that failed before anything was sent. Those must not render a
+   * link to a hash that does not exist.
+   */
+  hash?: `0x${string}` | undefined;
+};
+
 type Mode = "buy" | "redeem";
 
 /** What a user is doing to a position they already hold. */
@@ -144,7 +163,9 @@ interface State {
   borrowCollateral: string;
   /** Set once, when the market and a balance are first known. */
   borrowPrefilled: boolean;
-  borrowMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
+  /** Which signature is in flight, so a re-render keeps its button locked. */
+  inFlight: string | null;
+  borrowMessage: TxMessage | null;
   /**
    * Set only by the user clicking "show the setup steps".
    *
@@ -157,10 +178,10 @@ interface State {
   troveMode: TroveMode;
   troveAmount: string;
   faucetTokens: readonly FaucetToken[] | null;
-  faucetMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
+  faucetMessage: TxMessage | null;
   walletMessage: string | null;
-  tradeMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
-  approveMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
+  tradeMessage: TxMessage | null;
+  approveMessage: TxMessage | null;
 }
 
 const state: State = {
@@ -178,6 +199,7 @@ const state: State = {
   borrowDebt: DEFAULT_BORROW,
   borrowCollateral: "",
   borrowPrefilled: false,
+  inFlight: null,
   borrowMessage: null,
   showSteps: false,
   troveMode: "repay",
@@ -893,21 +915,32 @@ function walletClientFor(provider: EIP1193Provider, address: Address) {
   return createClient({ account: address, chain: mezoTestnet, transport: custom(provider) });
 }
 
+/**
+ * Render a message with a link to its transaction.
+ *
+ * One helper rather than a link argument at each of the eight call sites,
+ * so a new action cannot quietly ship without the link.
+ */
+function txNotice(message: TxMessage): HTMLElement {
+  const href = message.hash ? explorerTxUrl(message.hash) : undefined;
+  return notice(
+    message.kind,
+    message.text,
+    message.name,
+    href && message.hash
+      ? { href, label: `View ${truncateAddress(message.hash)} on the explorer` }
+      : undefined,
+  );
+}
+
 async function sendAndWait(hash: `0x${string}`): Promise<void> {
   const receipt = await waitForTransactionReceipt(publicClient, { hash });
   if (receipt.status !== "success") {
     // A mined-but-reverted transaction carries no revert reason in the
-    // receipt, so the only honest message names the hash and lets the user
-    // read it on the explorer.
-    /* The hash either way: it is the one thing that lets anyone else look
-       this up, and on a chain with no explorer a bare hash is honest where a
-       dead link is not. */
-    const link = explorerTxUrl(hash);
-    throw new Error(
-      link
-        ? `The transaction was mined but reverted. See ${link}`
-        : `The transaction was mined but reverted. Hash ${hash}`,
-    );
+    // receipt. The caller attaches the hash to its message and txNotice
+    // turns that into a link, so the text no longer carries a bare URL the
+    // user has to select and paste.
+    throw new Error("The transaction was mined but reverted.");
   }
 }
 
@@ -1156,9 +1189,12 @@ function renderTrade(): void {
       primary = actionButton({
         label: `Approve ${formatAmount(amount ?? 0n, MUSD_DECIMALS, 4)} ${spendingLabel}`,
         pendingLabel: "Approving…",
+        busy: state.inFlight === "approve",
         onClick: async () => {
           if (!connection || amount === null) return;
           state.approveMessage = null;
+          state.inFlight = "approve";
+          let hash: `0x${string}` | undefined;
           try {
             const wallet = walletClientFor(connection.provider, connection.address);
             // Exact amount, not an unlimited allowance: the vault pulls
@@ -1166,24 +1202,25 @@ function renderTrade(): void {
             // standing authority over the user's whole MUSD balance for no
             // benefit. The cost is one approval per buy, which is the trade
             // the audit's "no infinite approvals" row asks for.
-            const hash = await writeContract(wallet, {
+            hash = await writeContract(wallet, {
               address: spending,
               abi: ERC20_ABI,
               functionName: "approve",
               args: [vault, amount],
             });
-            state.approveMessage = { kind: "ok", text: "Approved. Waiting for the allowance to confirm…" };
+            state.approveMessage = { kind: "ok", text: "Approved. Waiting for the allowance to confirm…", hash };
             renderQuote();
             await sendAndWait(hash);
             // Re-read rather than assume: the allowance the vault will see is
             // the chain's, and this is also the cooldown - the buy button
             // stays out of reach until the new allowance is actually there.
             await refreshChain();
-            state.approveMessage = { kind: "ok", text: "Allowance confirmed." };
+            state.approveMessage = { kind: "ok", text: "Allowance confirmed.", hash };
           } catch (error) {
             const explained = describeError(error);
-            state.approveMessage = { kind: "error", text: explained.message, name: explained.name };
+            state.approveMessage = { kind: "error", text: explained.message, name: explained.name, hash };
           } finally {
+            state.inFlight = null;
             renderAll();
           }
         },
@@ -1200,12 +1237,15 @@ function renderTrade(): void {
       primary = actionButton({
         label: state.mode === "buy" ? "Buy shares" : "Redeem shares",
         pendingLabel: state.mode === "buy" ? "Buying…" : "Redeeming…",
+        busy: state.inFlight === "trade",
         onClick: async () => {
           if (!connection || amount === null) return;
           state.tradeMessage = null;
+          state.inFlight = "trade";
+          let hash: `0x${string}` | undefined;
           try {
             const wallet = walletClientFor(connection.provider, connection.address);
-            const hash =
+            hash =
               state.mode === "buy"
                 ? await writeContract(wallet, {
                     address: vault,
@@ -1225,11 +1265,13 @@ function renderTrade(): void {
             state.tradeMessage = {
               kind: "ok",
               text: state.mode === "buy" ? "Bought. Your balance is below." : "Redeemed. Your balance is below.",
+              hash,
             };
           } catch (error) {
             const explained = describeError(error);
-            state.tradeMessage = { kind: "error", text: explained.message, name: explained.name };
+            state.tradeMessage = { kind: "error", text: explained.message, name: explained.name, hash };
           } finally {
+            state.inFlight = null;
             renderAll();
           }
         },
@@ -1245,10 +1287,10 @@ function renderTrade(): void {
     actionRow.append(primary.element);
 
     if (state.approveMessage) {
-      messageBox.append(notice(state.approveMessage.kind, state.approveMessage.text, state.approveMessage.name));
+      messageBox.append(txNotice(state.approveMessage));
     }
     if (state.tradeMessage) {
-      messageBox.append(notice(state.tradeMessage.kind, state.tradeMessage.text, state.tradeMessage.name));
+      messageBox.append(txNotice(state.tradeMessage));
     }
     if (status?.origin === "synthetic") {
       messageBox.append(
@@ -1482,12 +1524,15 @@ function renderBorrow(): void {
     const primary = actionButton({
       label: `Lock ${formatAmount(collateral ?? 0n, 18, 8)} ${mezoTestnet.nativeCurrency.symbol} and borrow ${formatAmount(debt ?? 0n, MUSD_DECIMALS, 0)} MUSD`,
       pendingLabel: "Opening the position…",
+      busy: state.inFlight === "openTrove",
       onClick: async () => {
         if (!connection || debt === null || collateral === null) return;
         state.borrowMessage = null;
+        state.inFlight = "openTrove";
+        let hash: `0x${string}` | undefined;
         try {
           const wallet = walletClientFor(connection.provider, connection.address);
-          const hash = await writeContract(wallet, {
+          hash = await writeContract(wallet, {
             address: CONFIG.borrowerOperations as Address,
             abi: BORROWER_OPERATIONS_ABI,
             functionName: "openTrove",
@@ -1496,18 +1541,20 @@ function renderBorrow(): void {
             args: [debt, ZERO_ADDRESS, ZERO_ADDRESS],
             value: collateral,
           });
-          state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to open…" };
+          state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to open…", hash };
           renderBorrowQuote();
           await sendAndWait(hash);
           await refreshChain();
           state.borrowMessage = {
             kind: "ok",
             text: "Borrowed. The MUSD is in your wallet and the next step is below.",
+            hash,
           };
         } catch (error) {
           const explained = describeError(error);
-          state.borrowMessage = { kind: "error", text: explained.message, name: explained.name };
+          state.borrowMessage = { kind: "error", text: explained.message, name: explained.name, hash };
         } finally {
+          state.inFlight = null;
           renderAll();
         }
       },
@@ -1527,7 +1574,7 @@ function renderBorrow(): void {
       ]),
     );
     if (state.borrowMessage) {
-      messageBox.append(notice(state.borrowMessage.kind, state.borrowMessage.text, state.borrowMessage.name));
+      messageBox.append(txNotice(state.borrowMessage));
     }
   }
 
@@ -1726,12 +1773,15 @@ function renderTroveAmountForm(plan: PositionPlan, musdBalance: bigint): void {
         ? `Repay ${formatAmount(amount ?? 0n, MUSD_DECIMALS, 2)} MUSD`
         : `Borrow ${formatAmount(amount ?? 0n, MUSD_DECIMALS, 2)} MUSD more`,
       pendingLabel: repaying ? "Repaying\u2026" : "Borrowing\u2026",
+      busy: state.inFlight === "trove",
       onClick: async () => {
         if (amount === null) return;
         state.borrowMessage = null;
+        state.inFlight = "trove";
+        let hash: `0x${string}` | undefined;
         try {
           const wallet = walletClientFor(connection.provider, connection.address);
-          const hash = await writeContract(wallet, {
+          hash = await writeContract(wallet, {
             address: CONFIG.borrowerOperations as Address,
             abi: BORROWER_OPERATIONS_ABI,
             // No approval step for repayMUSD: BorrowerOperations burns the
@@ -1740,7 +1790,7 @@ function renderTroveAmountForm(plan: PositionPlan, musdBalance: bigint): void {
             functionName: repaying ? "repayMUSD" : "withdrawMUSD",
             args: [amount, ZERO_ADDRESS, ZERO_ADDRESS],
           });
-          state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to update\u2026" };
+          state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to update\u2026", hash };
           renderForm();
           await sendAndWait(hash);
           await refreshChain();
@@ -1748,11 +1798,13 @@ function renderTroveAmountForm(plan: PositionPlan, musdBalance: bigint): void {
           state.borrowMessage = {
             kind: "ok",
             text: repaying ? "Repaid. The debt above is the new one." : "Borrowed. The MUSD is in your wallet.",
+            hash,
           };
         } catch (error) {
           const explained = describeError(error);
-          state.borrowMessage = { kind: "error", text: explained.message, name: explained.name };
+          state.borrowMessage = { kind: "error", text: explained.message, name: explained.name, hash };
         } finally {
+          state.inFlight = null;
           renderAll();
         }
       },
@@ -1760,7 +1812,7 @@ function renderTroveAmountForm(plan: PositionPlan, musdBalance: bigint): void {
     primary.setBlocked(blocker);
     actionRow.append(primary.element);
     if (state.borrowMessage) {
-      messageBox.append(notice(state.borrowMessage.kind, state.borrowMessage.text, state.borrowMessage.name));
+      messageBox.append(txNotice(state.borrowMessage));
     }
   }
 
@@ -1810,28 +1862,33 @@ function renderCloseTrove(plan: PositionPlan, trove: TrovePosition): void {
   const primary = actionButton({
     label: `Repay ${formatAmount(plan.closeCost, MUSD_DECIMALS, 2)} MUSD and close`,
     pendingLabel: "Closing the position\u2026",
+    busy: state.inFlight === "closeTrove",
     onClick: async () => {
       state.borrowMessage = null;
+      state.inFlight = "closeTrove";
+      let hash: `0x${string}` | undefined;
       try {
         const wallet = walletClientFor(connection.provider, connection.address);
-        const hash = await writeContract(wallet, {
+        hash = await writeContract(wallet, {
           address: CONFIG.borrowerOperations as Address,
           abi: BORROWER_OPERATIONS_ABI,
           functionName: "closeTrove",
           args: [],
         });
-        state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to close\u2026" };
+        state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to close\u2026", hash };
         renderAll();
         await sendAndWait(hash);
         await refreshChain();
         state.borrowMessage = {
           kind: "ok",
           text: `Closed. The ${symbol} is back in your wallet and the debt is gone.`,
+          hash,
         };
       } catch (error) {
         const explained = describeError(error);
-        state.borrowMessage = { kind: "error", text: explained.message, name: explained.name };
+        state.borrowMessage = { kind: "error", text: explained.message, name: explained.name, hash };
       } finally {
+        state.inFlight = null;
         renderAll();
       }
     },
@@ -1850,7 +1907,7 @@ function renderCloseTrove(plan: PositionPlan, trove: TrovePosition): void {
   );
   if (state.borrowMessage) {
     sections.borrow.append(
-      notice(state.borrowMessage.kind, state.borrowMessage.text, state.borrowMessage.name),
+      txNotice(state.borrowMessage),
     );
   }
 }
@@ -1904,11 +1961,14 @@ function renderFaucet(): void {
       label: `Claim ${token.symbol}`,
       pendingLabel: "Claiming\u2026",
       variant: "secondary",
+      busy: state.inFlight === `claim:${token.symbol}`,
       onClick: async () => {
         state.faucetMessage = null;
+        state.inFlight = `claim:${token.symbol}`;
+        let hash: `0x${string}` | undefined;
         try {
           const wallet = walletClientFor(connection.provider, connection.address);
-          const hash = await writeContract(wallet, {
+          hash = await writeContract(wallet, {
             address: CONFIG.faucet as Address,
             abi: FAUCET_ABI,
             functionName: "claim",
@@ -1916,11 +1976,12 @@ function renderFaucet(): void {
           });
           await sendAndWait(hash);
           await refreshChain();
-          state.faucetMessage = { kind: "ok", text: `Claimed ${token.symbol}. Your balance is below.` };
+          state.faucetMessage = { kind: "ok", text: `Claimed ${token.symbol}. Your balance is below.`, hash };
         } catch (error) {
           const explained = describeError(error);
-          state.faucetMessage = { kind: "error", text: explained.message, name: explained.name };
+          state.faucetMessage = { kind: "error", text: explained.message, name: explained.name, hash };
         } finally {
+          state.inFlight = null;
           renderFaucet();
           renderPosition();
         }
@@ -1960,7 +2021,7 @@ function renderFaucet(): void {
   }
   sections.faucet.append(grid);
   if (state.faucetMessage) {
-    sections.faucet.append(notice(state.faucetMessage.kind, state.faucetMessage.text, state.faucetMessage.name));
+    sections.faucet.append(txNotice(state.faucetMessage));
   }
 }
 

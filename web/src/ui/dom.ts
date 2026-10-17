@@ -83,6 +83,18 @@ export function actionButton(options: {
   pendingLabel: string;
   variant?: "primary" | "secondary" | "ghost";
   onClick: () => Promise<void>;
+  /**
+   * Start in the pending state.
+   *
+   * The pending flag below is a closure local, so it dies with the button.
+   * Any render that runs while a transaction is in flight - the 5s poll, or a
+   * handler's own progress render - rebuilt this button enabled and let the
+   * user send the same transaction twice. That is how the first signing run
+   * produced a second openTrove one block after the first, which reverted
+   * with "Trove is active" and read as a broken dapp. The caller owns the
+   * truth about what is in flight and passes it here.
+   */
+  busy?: boolean;
 }): ActionButton {
   const labelNode = el("span", { class: "button-label" }, [options.label]);
   const spinner = el("span", { class: "spinner", "aria-hidden": "true" });
@@ -91,7 +103,7 @@ export function actionButton(options: {
     class: `button button-${options.variant ?? "primary"}`,
   }, [spinner, labelNode]);
 
-  let pending = false;
+  let pending = options.busy ?? false;
   let blocked: string | null = null;
 
   const sync = (): void => {
@@ -172,12 +184,39 @@ export function addressChip(address: string, truncated: string, explorerUrl?: st
 }
 
 /** An inline message, next to the control that caused it. */
-export function notice(kind: "error" | "warning" | "ok", text: string, name?: string): HTMLElement {
+export function notice(
+  kind: "error" | "warning" | "ok",
+  text: string,
+  name?: string,
+  /**
+   * An explorer link for the transaction this notice is about.
+   *
+   * Every message that follows a signature gets one. A tester who has just
+   * signed should never have to open the explorer, search their own address
+   * and hunt down the top row to find out what happened - which is exactly
+   * what the first signing run forced, including for the one transaction
+   * that reverted.
+   */
+  link?: { href: string; label: string },
+): HTMLElement {
+  const body: (Node | string)[] = [icon(kind === "ok" ? ICONS.check : ICONS.warning), el("span", {}, [text])];
+  if (link) {
+    body.push(
+      el("a", {
+        class: "notice-link",
+        href: link.href,
+        target: "_blank",
+        // noopener because target=_blank otherwise hands the explorer a
+        // window.opener handle back into the dapp.
+        rel: "noopener noreferrer",
+      }, [link.label, icon(ICONS.external)]),
+    );
+  }
   return el("p", {
     class: `notice notice-${kind}`,
     role: kind === "error" ? "alert" : "status",
     "data-error": name,
-  }, [icon(kind === "ok" ? ICONS.check : ICONS.warning), el("span", {}, [text])]);
+  }, body);
 }
 
 /** A labelled figure. The value is mono so two of them line up digit for digit. */

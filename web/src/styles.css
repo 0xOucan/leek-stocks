@@ -676,6 +676,48 @@ h3 {
   color: var(--color-primary);
 }
 
+/*
+ * The explorer link inside a notice.
+ *
+ * It wraps onto its own line rather than sitting inline, because the hash
+ * makes the label long and a notice that reflows mid-sentence on a phone
+ * reads as broken. The notice is a flex row, so the link needs the whole
+ * width of a second line; `flex-basis: 100%` with wrap gives it that.
+ */
+.notice {
+  flex-wrap: wrap;
+}
+
+.notice-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-basis: 100%;
+  /* Aligned under the text, not under the icon, so the two lines read as one
+     block instead of a list. */
+  margin-left: 28px;
+  color: var(--color-primary);
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.notice-link:hover,
+.notice-link:focus-visible {
+  text-decoration: underline;
+}
+
+.notice-link .icon {
+  width: 13px;
+  height: 13px;
+}
+
+@media (max-width: 400px) {
+  /* No room to indent at phone width; the gutter matters more. */
+  .notice-link {
+    margin-left: 0;
+  }
+}
+
 .stats {
   display: grid;
   gap: var(--gap);
