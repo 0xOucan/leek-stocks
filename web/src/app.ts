@@ -19,7 +19,7 @@ import { formatAge, formatAmount, formatIndexValue, parseAmount, truncateAddress
 import { applySlippage, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
 import { claimAvailability, freshness } from "./lib/staleness.ts";
 import { faucetAllowedOnChain, readFaucetToken, FAUCET_ABI, type FaucetToken } from "./faucet.ts";
-import { readBalances, readMarket, type Balances, type MarketState } from "./market.ts";
+import { readBalances, readMarket, readVaultPrice, type Balances, type MarketState } from "./market.ts";
 import {
   actionButton,
   addressChip,
@@ -45,6 +45,8 @@ interface State {
   amount: string;
   slippageBps: number;
   market: MarketState | null;
+  /** On-chain price per index, so every card can show one. */
+  prices: Record<string, bigint | null>;
   balances: Balances | null;
   /** Per-section messages, kept beside the control that produced them. */
   faucetTokens: readonly FaucetToken[] | null;
@@ -62,6 +64,7 @@ const state: State = {
   amount: "",
   slippageBps: DEFAULT_SLIPPAGE_BPS,
   market: null,
+  prices: {},
   balances: null,
   faucetTokens: null,
   faucetMessage: null,
@@ -152,10 +155,13 @@ export function mount(): void {
         // navigation item that leads nowhere is worse than a sentence saying so.
         "Leeknding, the lending half, is built and tested but not deployed: multichain Leeknding is coming. Nothing on this page borrows, lends or charges interest.",
       ]),
+      /* Named from the chain rather than asserted: on Mezo this is the useful
+         warning that gas is bitcoin, and on a rehearsal chain the same
+         sentence would have been a lie. */
       el("p", {}, [
-        "Gas on Mezo is paid in ",
+        `Gas on ${mezoTestnet.name} is paid in `,
         el("strong", {}, [mezoTestnet.nativeCurrency.symbol]),
-        ", not ether.",
+        mezoTestnet.nativeCurrency.symbol === "BTC" ? ", not ether." : ".",
       ]),
     ]),
   );
@@ -197,6 +203,17 @@ async function refreshChain(): Promise<void> {
   if (document.visibilityState !== "visible") return;
   const market = selectedMarket();
   state.market = await readMarket(market);
+  /* The on-chain price of every configured vault, not only the selected one:
+     a card that shows the feed's value with no on-chain figure beside it
+     cannot tell a stopped feed from an unread one. */
+  state.prices = Object.fromEntries(
+    await Promise.all(
+      MARKETS.filter((m) => m.vault !== undefined).map(async (m) => [
+        m.symbol,
+        await readVaultPrice(m.vault as Address),
+      ]),
+    ),
+  ) as Record<string, bigint | null>;
   const connection = state.connection;
   if (connection && CONFIG.musd && market.share && market.vault) {
     state.balances = await readBalances(connection.address, CONFIG.musd, market.share, market.vault);
@@ -360,6 +377,8 @@ function renderIndices(): void {
   for (const market of MARKETS) {
     const status = state.feed.indices?.find((i) => i.symbol === market.symbol) ?? null;
     const onChain = market.symbol === state.selected ? state.market : null;
+    // Read for every index; see readVaultPrice.
+    const onChainPrice = onChain?.price ?? state.prices[market.symbol] ?? null;
     const fresh = freshness(
       status?.onChainUpdatedAt ?? onChain?.round?.updatedAt ?? null,
       now,
@@ -384,7 +403,7 @@ function renderIndices(): void {
         el("dd", {}, [fresh.ageSeconds === null ? "never" : formatAge(fresh.ageSeconds)]),
         el("dt", {}, ["On chain"]),
         el("dd", { class: "mono" }, [
-          onChain?.price ? formatAmount(onChain.price, MUSD_DECIMALS, 2) + " MUSD" : "—",
+          onChainPrice ? formatAmount(onChainPrice, MUSD_DECIMALS, 2) + " MUSD" : "—",
         ]),
       ]),
       fresh.state === "stale"

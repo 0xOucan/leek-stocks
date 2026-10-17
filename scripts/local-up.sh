@@ -25,7 +25,23 @@ FEED_PORT=8787
 DEPLOYER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 DEPLOYER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
 WANT_DAPP=1
-[[ "${1:-}" == "--no-dapp" ]] && WANT_DAPP=0
+# Addresses to fund with mock MUSD, beyond Anvil's own first account.
+#
+# Why this exists: the first run minted only to Anvil's account 0, and anyone
+# clicking through with their own wallet - Rabby, MetaMask, the LeekWallet
+# extension - connected a different address, saw a zero balance, and met a buy
+# button that could not work. That looks like a broken page rather than an
+# unfunded account.
+FUND=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-dapp) WANT_DAPP=0 ;;
+    --fund) shift; FUND+=("$1") ;;
+    0x*) FUND+=("$1") ;;
+    *) echo "unknown argument: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
 
 need() { command -v "$1" >/dev/null || { echo "missing: $1" >&2; exit 1; }; }
 need anvil; need forge; need cast; need node
@@ -95,9 +111,15 @@ echo "   AMEZON vault      $VAULT_A"
 
 # Mint the clicker some MUSD. Without it the first thing a visitor sees is a
 # buy button that cannot work, which looks like a bug in the page.
-cast send "$MUSD" "mint(address,uint256)" "$DEPLOYER" 1000000000000000000000000 \
-  --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null
-echo "   minted 1,000,000 mock MUSD to $DEPLOYER"
+for who in "$DEPLOYER" "${FUND[@]:-}"; do
+  [[ -n "$who" ]] || continue
+  cast send "$MUSD" "mint(address,uint256)" "$who" 1000000000000000000000000 \
+    --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null
+  # Gas too, for an address that is not one of Anvil's pre-funded ten.
+  cast send "$who" --value 10ether \
+    --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null 2>&1 || true
+  echo "   funded $who with 1,000,000 mock MUSD and 10 gas"
+done
 
 echo "== feed on :$FEED_PORT (synthetic prices, chain $CHAIN_ID)"
 ( cd feed && [ -d node_modules ] || npm ci --silent --no-audit --no-fund ) || true
@@ -135,9 +157,15 @@ ENV
 
    Open http://127.0.0.1:5173
 
-   In the wallet: add a network with RPC $RPC and chain id $CHAIN_ID,
-   then import Anvil's account 0. Its key is in this script - safe here
-   and nowhere else.
+   In the wallet: add a network with RPC $RPC and chain id $CHAIN_ID.
+
+   Either import Anvil's account 0 (its key is in this script - safe here
+   and nowhere else), or use your own address and re-run with:
+
+       ./scripts/local-up.sh --fund 0xYourAddress
+
+   An unfunded address sees a zero balance and a buy button that cannot
+   work, which is indistinguishable from a broken page.
 
 INFO
 fi
