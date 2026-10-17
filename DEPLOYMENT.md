@@ -126,7 +126,19 @@ while the account sits at 0 is **rejected**, not queued:
 error code -32000: invalid nonce; got 1, expected 0: invalid sequence
 ```
 
-`--slow` is the fix, and `scripts/deploy-mezo.sh` passes it. The first attempt
+`--slow` is the fix, and `scripts/deploy-mezo.sh` passes it.
+
+**And receipts arrive late.** With `--slow`, the next failure was
+`Failure on receiving a receipt ... server returned a null response`. That was
+not a failure either: the transaction was in block 16203095 with status 1 and
+its contract is on chain. Mezo's RPC answers `eth_getTransactionReceipt` with
+null for a short window after a transaction has already been included, and
+Foundry treats the null as fatal. Hence `--timeout 300`, and
+`./scripts/deploy-mezo.sh --resume` to continue a broadcast that stopped this
+way rather than starting again and orphaning what landed.
+
+**Check before you re-run, every time:** `cast receipt <hash>` and `cast nonce
+<deployer>`. A deploy on this chain can report failure and have succeeded. The first attempt
 here was made without it: one contract landed, the rest were refused, and the
 addresses printed in that run's log were simulation's predictions rather than
 anything that exists. **Record addresses only from a log that completed.** An
