@@ -145,6 +145,7 @@ of them puts a key or a password on a command line.
 | `grant-publisher.sh` | grants `PUBLISHER_ROLE` to a dedicated key and revokes it from the deployer, confirming by reading `hasRole` |
 | `sweep-publisher.sh` | sends all but a gas float from the publisher back to the deployer |
 | `feed-env.sh` | writes `feed/.env` with the publisher's key taken out of the keystore and never shown |
+| `borrow-musd.sh` | opens a trove on Mezo's native borrow system, so there is MUSD to buy shares with |
 
 ## What Mezo does differently, and what it cost to find out
 
