@@ -15,7 +15,7 @@ workstation, `[VPS]` on the server, `[CLOUDFLARE]` in the dashboard.
 | Unit | Project | Container | Port | Hostname |
 |---|---|---|---|---|
 | The dapp (static) | `leekdefi` | `oucan-leekdefi` | 8080 | `leekdefi.0xoucanproject.xyz` |
-| The price feed (node) | `leekdefi-feed` | `oucan-leekdefi-feed` | 8787 | `feed.leekdefi.0xoucanproject.xyz`, which answers only `/healthz` |
+| The price feed (node) | `leekdefi-feed` | `oucan-leekdefi-feed` | 8787 | `leekdefi-feed.0xoucanproject.xyz`, which answers only `/healthz` |
 
 **Why two.** They fail separately. A feed that cannot reach its price source
 must not take the dapp's static assets down with it, and rolling one back
@@ -62,9 +62,12 @@ assume them.
       PUB=0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E   # production publisher
       cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "PUBLISHER_ROLE") \
         $PUB --rpc-url https://rpc.test.mezo.org   # must be true
-      cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "DEFAULT_ADMIN_ROLE") \
+      cast call $ORACLE "hasRole(bytes32,address)(bool)" \
+        0x0000000000000000000000000000000000000000000000000000000000000000 \
         $PUB --rpc-url https://rpc.test.mezo.org   # must be false
       ```
+      OpenZeppelin's `DEFAULT_ADMIN_ROLE` is `bytes32(0)`; hashing the text
+      `DEFAULT_ADMIN_ROLE` checks a different role and is not a valid audit.
 - [ ] That secrets file is `0600` and outside every repository:
       `stat -c '%a %U %n' /srv/oucan/secrets/projects/leekdefi-feed.env`.
 - [ ] The publisher holds only gas. `sweep-publisher.sh` moves the rest home.
@@ -418,7 +421,7 @@ depends on the other to start.
       "LeekStonks — LeekDefi".
 - [ ] `https://leekdefi.0xoucanproject.xyz/prices` returns JSON. This proves the
       internal proxy works, which is the part that is easy to get wrong.
-- [ ] `https://feed.leekdefi.0xoucanproject.xyz/healthz` returns `{"ok":true}`
+- [ ] `https://leekdefi-feed.0xoucanproject.xyz/healthz` returns `{"ok":true}`
       and **every other path on that host returns 404**.
 - [ ] The application ports are **not** reachable at the origin address:
       `curl --max-time 5 http://<origin ip>:8080` and `:8787` must both fail.

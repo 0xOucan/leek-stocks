@@ -14,7 +14,7 @@ static assets down with it.
 | Unit | Project | Type | Port | Hostname |
 |---|---|---|---|---|
 | The dapp | `leekdefi` | static (Caddy file-server) | 8080 | `leekdefi.0xoucanproject.xyz` |
-| The price feed | `leekdefi-feed` | node | 8787 | `feed.leekdefi.0xoucanproject.xyz` |
+| The price feed | `leekdefi-feed` | node | 8787 | `leekdefi-feed.0xoucanproject.xyz` |
 
 The zone is **`0xoucanproject.xyz`**. Not `oucanproject.xyz` — that is a
 different name and will produce a certificate for a host nobody visits.
@@ -50,7 +50,7 @@ yourself: the publication is gated on a secret audit the operator performs.
 
 ## Step 1 — Cloudflare
 
-For **both** hostnames, `leekdefi` and `feed.leekdefi`:
+For **both** hostnames, `leekdefi` and `leekdefi-feed`:
 
 - DNS → **proxied** `CNAME` to `0xoucanproject.xyz`. Proxied, not DNS-only:
   DNS-only publishes the origin address.
@@ -74,7 +74,7 @@ Generate each entry with vpsinfra's own script rather than copying a file:
   --app-type static --port 8080 --database none --apply
 
 ./scripts/add-project.sh --name leekdefi-feed \
-  --hostname feed.leekdefi.0xoucanproject.xyz \
+  --hostname leekdefi-feed.0xoucanproject.xyz \
   --source github-public \
   --repository https://github.com/0xOucan/leek-stocks.git \
   --app-type node --port 8787 --database none --apply
@@ -165,9 +165,13 @@ ORACLE=0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6
 PUB=0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E   # the production publisher
 cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "PUBLISHER_ROLE") \
   $PUB --rpc-url $R      # must be true
-cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "DEFAULT_ADMIN_ROLE") \
+cast call $ORACLE "hasRole(bytes32,address)(bool)" \
+  0x0000000000000000000000000000000000000000000000000000000000000000 \
   $PUB --rpc-url $R      # must be FALSE
 ```
+
+OpenZeppelin defines `DEFAULT_ADMIN_ROLE` as `bytes32(0)`. Do not hash its
+name: that tests a different role and can produce a false sense of safety.
 
 A `true` on the second line means the deployer key is about to sit on a server
 that signs all day, able to pause the feed, move the fees and reconfigure the
@@ -199,7 +203,7 @@ other to start.
 - [ ] `https://leekdefi.0xoucanproject.xyz/prices` returns JSON with two
       indices. **This is the check that is easy to get wrong** — it proves the
       internal proxy works.
-- [ ] `https://feed.leekdefi.0xoucanproject.xyz/healthz` returns
+- [ ] `https://leekdefi-feed.0xoucanproject.xyz/healthz` returns
       `{"ok":true}`, and **every other path on that host returns 404**.
 - [ ] `curl --max-time 5 http://<origin ip>:8080` and `:8787` both **fail**.
       This is the one check that catches a container published to the host by
