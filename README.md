@@ -70,9 +70,9 @@ fund, and nobody should put money in it. See
 ## Audit
 
 [audit/AUDIT-REPORT.md](audit/AUDIT-REPORT.md) applies the ethskills EVM audit
-checklists and lists eight findings with their status, including the two gates
-still open: `slither` is not installed, and the invariant and fork test suites
-are owed before deployment.
+checklists and lists eight findings with their status. Both deployment gates are now closed:
+`slither` runs clean of unaddressed high and medium findings, and the
+invariant and fork suites are in the tree.
 
 ## Standards
 
@@ -85,10 +85,32 @@ are owed before deployment.
 
 ```sh
 forge build
-forge test -vvv          # fuzz runs are configured at 1000
-forge snapshot           # gas
-slither .                # static analysis
+forge test -vvv                      # fuzz runs are configured at 1000
+forge test --match-path "test/fork/*"  # against the real MUSD on Mezo testnet
+forge snapshot                       # gas
+slither .                            # static analysis
 ```
+
+The fork suite pins a block number so a run is reproducible, and skips with a
+printed reason when the RPC is unreachable, so an offline machine does not
+turn into a red build. It proves what a mock cannot: that the live MUSD still
+reports `MUSD` and 18 decimals (finding L-5), that its `transfer` and
+`transferFrom` move exactly the amount asked for (finding L-2), and that a
+vault deployed against it prices and mints correctly.
+
+## Deploying
+
+See [script/README.md](script/README.md) for the parameters, the role-holder
+environment variables and the pre-flight checklist. The invocation is:
+
+```sh
+forge script script/DeployMezoTestnet.s.sol \
+  --rpc-url mezo_testnet --account monad-deployer \
+  --sender <address> --broadcast
+```
+
+`--account` makes Foundry prompt for the keystore password, so no key and no
+password is ever passed on a command line.
 
 ## Licence
 

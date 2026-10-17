@@ -14,8 +14,9 @@ loss. Low = best practice, latent bug. Info = no security impact.
 **Not an independent audit.** These findings were produced by the same process
 that wrote the contracts, which is worth less than an outside review and is
 recorded as such. `slither` 0.11.6 has been run and its findings are
-in the Slither section below. The remaining open gate before deployment is a
-**fork test against the real MUSD on Mezo testnet**.
+in the Slither section below. The last open gate, a **fork test against the
+real MUSD on Mezo testnet**, is now `test/fork/MezoFork.t.sol`: see the
+checklist row below for what it proves.
 
 ## Summary
 
@@ -261,7 +262,7 @@ after the fixes leaves four, all accepted below:
 | Events on every state change | done |
 | Unit + fuzz tests, 1000 runs | done, 34 tests |
 | Invariant tests | done. Five invariants over a bounded handler (buy, redeem, fund, price moves inside the oracle's bound, time passing, fee withdrawal): fees never exceed the balance, MUSD is conserved across every path, the cap holds whatever the price did, supply is held only by actors the vault minted to, and the oracle never regresses. 256 runs x 8192 calls, zero reverts |
-| Fork test against real MUSD on Mezo testnet | **owed** before deployment |
+| Fork test against real MUSD on Mezo testnet | done. `test/fork/MezoFork.t.sol`, pinned at block 16,198,929. Reads `symbol() == "MUSD"` and `decimals() == 18` off the deployed token (L-5), measures `transfer` and `transferFrom` on both sides to show no fee and no rebase (L-2), and buys and redeems through a vault deployed against it: 1000 MUSD at a 200e8 feed answer mints 4.975 shares, so the 8-to-18 decimal scaling is right on the real token. Skips with a reason when the RPC is unreachable |
 | Gas snapshot | done |
 | `slither`, no unaddressed high/medium | done; 0.11.6 installed in `.venv`. Four findings fixed, five accepted with reasons above. No high or medium outstanding |
 | Verified source after deploy | pending deployment |
