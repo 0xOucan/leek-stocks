@@ -43,11 +43,16 @@ export interface ClaimAvailability {
   readonly waitSeconds: number;
 }
 
-export function claimAvailability(nextClaimAt: number | null, nowSeconds: number): ClaimAvailability {
-  // Unknown reads as available: the faucet's own check is authoritative, and
-  // disabling a button because a view function could not be read would hide a
-  // working faucet behind a failed guess at its ABI.
-  if (nextClaimAt === null || nextClaimAt <= 0) return { ready: true, waitSeconds: 0 };
-  const wait = nextClaimAt - nowSeconds;
-  return wait <= 0 ? { ready: true, waitSeconds: 0 } : { ready: false, waitSeconds: wait };
+export function claimAvailability(
+  status: { readonly claimable: boolean; readonly secondsRemaining: number } | null,
+  _nowSeconds: number,
+): ClaimAvailability {
+  /* The faucet's own `claimStatus` is authoritative: it already accounts for
+     the cooldown, the pause, the per-token enablement and the total cap, so
+     reconstructing that verdict here could only disagree with it. A null means
+     the read failed, and an unreadable view disables nothing - hiding a
+     working faucet behind a failed read is worse than a claim that reverts. */
+  if (status === null) return { ready: true, waitSeconds: 0 };
+  if (status.claimable) return { ready: true, waitSeconds: 0 };
+  return { ready: false, waitSeconds: Math.max(0, status.secondsRemaining) };
 }

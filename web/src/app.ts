@@ -802,7 +802,7 @@ function renderFaucet(): void {
   const now = Math.floor(Date.now() / 1000);
   const grid = el("div", { class: "grid" });
   for (const token of tokens) {
-    const availability = claimAvailability(token.nextClaimAt, now);
+    const availability = claimAvailability(token, now);
     // Each claim owns its own pending state, so one token in flight does not
     // grey out the others.
     const button = actionButton({
