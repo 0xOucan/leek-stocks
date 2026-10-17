@@ -1,0 +1,635 @@
+/*
+ * Minimalism and Swiss style: a grid, a lot of space, high contrast, no
+ * decoration that is not carrying information. Gold is the only primary
+ * action colour and purple is used once; the brief's explicit avoid-list has
+ * "AI purple/pink gradients" on it, so there are no gradients here at all.
+ *
+ * Fonts are self-hosted woff2, latin subset, rather than linked from Google:
+ * a third-party font request is a third-party connection on every page load,
+ * which is a privacy leak and would force `style-src` and `font-src` open to
+ * fonts.googleapis.com and fonts.gstatic.com in a CSP that is otherwise
+ * entirely 'self'. Self-hosted with font-display: swap is also faster than a
+ * cross-origin connect, handshake and fetch.
+ */
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/space-grotesk-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/space-grotesk-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/inter-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/inter-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+
+:root {
+  /* "Gold trust + purple tech". Semantic names only; no component below
+     writes a hex value, so a palette change is one edit here. */
+  --color-primary: #f59e0b;
+  --color-on-primary: #0f172a;
+  --color-secondary: #fbbf24;
+  --color-on-secondary: #0f172a;
+  --color-accent: #8b5cf6;
+  --color-on-accent: #000000;
+  --color-background: #0f172a;
+  --color-foreground: #f8fafc;
+  --color-card: #222735;
+  --color-card-foreground: #f8fafc;
+  --color-muted: #272f42;
+  --color-muted-foreground: #94a3b8;
+  --color-border: #334155;
+  --color-destructive: #ef4444;
+  --color-on-destructive: #000000;
+  --color-ring: #f59e0b;
+
+  --font-heading: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  /* Every number on this page - prices, amounts, addresses, round ids - is
+     mono, because in a proportional face two prices of different digit widths
+     do not line up and comparing them at a glance stops working. */
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius: 10px;
+  --gap: 16px;
+  --transition: 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* The light override. Not a hardcoded dark wrapper: a reader whose system is
+   in light mode gets light, and `data-theme` lets that be forced either way. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-background: #f8fafc;
+    --color-foreground: #0f172a;
+    --color-card: #ffffff;
+    --color-card-foreground: #0f172a;
+    --color-muted: #eef2f7;
+    /* Darkened from the dark-mode slate so body text on white clears 4.5:1;
+       #94a3b8 on #ffffff is 2.2:1 and would fail. */
+    --color-muted-foreground: #4a5a70;
+    --color-border: #cbd5e1;
+    --color-primary: #a05a00;
+    --color-on-primary: #ffffff;
+    --color-ring: #a05a00;
+    --color-destructive: #b91c1c;
+  }
+}
+:root[data-theme="light"] {
+  --color-background: #f8fafc;
+  --color-foreground: #0f172a;
+  --color-card: #ffffff;
+  --color-card-foreground: #0f172a;
+  --color-muted: #eef2f7;
+  --color-muted-foreground: #4a5a70;
+  --color-border: #cbd5e1;
+  --color-primary: #a05a00;
+  --color-on-primary: #ffffff;
+  --color-ring: #a05a00;
+  --color-destructive: #b91c1c;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark light;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+}
+h2 {
+  font-size: 1.15rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted-foreground);
+}
+h3 {
+  font-size: 1.1rem;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--color-muted-foreground);
+}
+.small {
+  font-size: 0.85rem;
+}
+
+#app {
+  /* Mobile-first with a 16px gutter and a capped measure; nothing scrolls
+     sideways at 320px because every grid collapses to one column. */
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+.skip-link:focus {
+  left: 16px;
+  top: 16px;
+  z-index: 10;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  padding: 12px 16px;
+  border-radius: var(--radius);
+}
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 24px;
+}
+
+.tagline {
+  margin: 4px 0 0;
+  font-family: var(--font-heading);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.masthead-title p {
+  max-width: 44ch;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: 1fr;
+}
+@media (min-width: 640px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.card {
+  background: var(--color-card);
+  color: var(--color-card-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.card-head p {
+  margin: 2px 0 0;
+}
+
+.price {
+  /* Fixed line box: the value arrives on a five-second poll, and without a
+     reserved height every refresh would shift the card below it. */
+  font-size: 2rem;
+  font-weight: 500;
+  margin: 0;
+  min-height: 2.6rem;
+  line-height: 1.3;
+}
+
+.meta,
+.quote-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 0.9rem;
+}
+.meta dt,
+.quote-list dt {
+  color: var(--color-muted-foreground);
+}
+.meta dd,
+.quote-list dd {
+  margin: 0;
+  text-align: right;
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--color-border);
+  padding-top: 12px;
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.badge-ok {
+  color: var(--color-foreground);
+  border-color: var(--color-primary);
+}
+.badge-warn,
+.badge-synthetic {
+  color: var(--color-on-primary);
+  background: var(--color-secondary);
+  border-color: var(--color-secondary);
+  font-weight: 500;
+}
+.badge-muted {
+  color: var(--color-muted-foreground);
+}
+
+/* ------------------------------------------------------------------ controls */
+
+.button {
+  /* 44px minimum, with 8px between neighbours: the accessibility baseline for
+     a touch target, and these are the buttons that spend money. */
+  min-height: 44px;
+  min-width: 44px;
+  padding: 10px 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  cursor: pointer;
+  transition:
+    background var(--transition),
+    border-color var(--transition),
+    opacity var(--transition);
+}
+.button-secondary {
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  border-color: var(--color-border);
+}
+.button-ghost {
+  background: transparent;
+  color: var(--color-foreground);
+  border-color: var(--color-border);
+}
+.button.small {
+  min-height: 44px;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+}
+.button:hover:not(:disabled) {
+  background: var(--color-secondary);
+}
+.button-secondary:hover:not(:disabled),
+.button-ghost:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: var(--color-muted);
+}
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Never removed, and never replaced with an outline:none: the ring is the only
+   thing telling a keyboard user where they are. */
+:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  display: none;
+}
+.button.is-pending .spinner {
+  display: inline-block;
+  animation: spin 700ms linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  /* The spinner still has to say "working", so it keeps a shape rather than a
+     spin: a static ring plus the button's changed label and aria-busy. */
+  .button.is-pending .spinner {
+    display: inline-block;
+    border-top-color: currentColor;
+    opacity: 0.6;
+  }
+}
+
+.wallet-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+.wallet-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wallet-option {
+  font-weight: 500;
+}
+.wallet-option img {
+  border-radius: 4px;
+}
+.wallet-connected {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.wallet-name {
+  font-family: var(--font-heading);
+  font-weight: 600;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 4px 6px 4px 12px;
+  font-size: 0.85rem;
+}
+.chip-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: none;
+  border: none;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  border-radius: 999px;
+}
+.chip-action:hover {
+  color: var(--color-primary);
+}
+.chip-copied {
+  font-size: 0.75rem;
+  color: var(--color-primary);
+  min-width: 3.5rem;
+}
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.trade-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.select,
+.input {
+  min-height: 44px;
+  padding: 10px 12px;
+  background: var(--color-card);
+  color: var(--color-card-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  font-family: var(--font-body);
+}
+.input {
+  font-family: var(--font-mono);
+  width: 100%;
+}
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.segment {
+  min-height: 44px;
+  padding: 10px 20px;
+  background: transparent;
+  color: var(--color-foreground);
+  border: none;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.segment.is-active {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+.field-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.field-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+}
+.field p {
+  margin: 0;
+}
+
+.quote {
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+  /* Reserved, so the action row does not jump when the first quote lands. */
+  min-height: 86px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.action-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notice {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-muted);
+  font-size: 0.9rem;
+}
+.notice-error {
+  border-color: var(--color-destructive);
+  color: var(--color-foreground);
+}
+.notice-error .icon {
+  color: var(--color-destructive);
+}
+.notice-warning .icon {
+  color: var(--color-secondary);
+}
+.notice-ok .icon {
+  color: var(--color-primary);
+}
+
+.stats {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.stat-value {
+  font-size: 1.3rem;
+  min-height: 1.7rem;
+}
+
+.footnote {
+  border-top: 1px solid var(--color-border);
+  padding-top: 16px;
+  color: var(--color-muted-foreground);
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.footnote p {
+  margin: 0;
+  max-width: 70ch;
+}

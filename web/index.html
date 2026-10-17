@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- No maximum-scale and no user-scalable=no: pinch zoom is how someone
+         reads a price on a phone, and disabling it fails the accessibility
+         baseline for no layout benefit. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LeekStonks — Lending and ETFs protocol</title>
+    <meta
+      name="description"
+      content="Parody index tokens, settled in MUSD on Mezo testnet. Read the oracle's prices, buy and redeem shares, and see the vault's reserves against its liabilities."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- Absolute, because a link preview resolves these on another host and a
+         relative path there points at the scraper's own domain. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="LeekStonks" />
+    <meta property="og:title" content="LeekStonks — Lending and ETFs protocol" />
+    <meta
+      property="og:description"
+      content="Parody index tokens, settled in MUSD on Mezo testnet. Testnet only, not securities, not backed by anything."
+    />
+    <meta property="og:url" content="%VITE_PUBLIC_URL%/" />
+    <meta property="og:image" content="%VITE_PUBLIC_URL%/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#trade">Skip to buying and redeeming</a>
+    <main id="app"></main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
