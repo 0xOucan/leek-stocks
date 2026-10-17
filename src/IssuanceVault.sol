@@ -79,6 +79,19 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
 
     /// @notice Fee on buy and on redeem, in basis points.
     uint16 public feeBps;
+    /**
+     * @notice Share of every fee that stays in reserves, in basis points.
+     *
+     * @dev The backstop, made a mechanism instead of a hope. `fund()` pays its
+     *      caller nothing, so a design that relies on someone calling it
+     *      relies on goodwill: a contract only advances when somebody is paid
+     *      to advance it, and nobody is paid to advance that one. This cut is
+     *      taken from the fee before the treasury sees it, so every trade
+     *      makes the shortfall in H-1 smaller without anyone deciding to be
+     *      generous. It is on the fee, never on the principal, so a buyer's
+     *      own money is never quietly diverted.
+     */
+    uint16 public reserveShareBps;
     /// @notice Hard cap on shares outstanding.
     uint256 public maxShares;
     /// @notice MUSD collected as fees, excluded from reserves.
@@ -91,6 +104,8 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     event Funded(address indexed from, uint256 amount);
     event FeesWithdrawn(address indexed to, uint256 amount);
     event FeeSet(uint16 feeBps);
+    event ReserveShareSet(uint16 reserveShareBps);
+    event ReservesTopped(uint256 amount, uint256 reservesAfter);
     event MaxSharesSet(uint256 maxShares);
     event Paused(address indexed guardian);
     event Unpaused(address indexed guardian);
@@ -99,6 +114,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     error ZeroAmount();
     error VaultPaused();
     error FeeTooHigh(uint16 feeBps);
+    error ShareTooHigh(uint16 reserveShareBps);
     error ShareAlreadySet();
     error CapExceeded(uint256 supplyAfter, uint256 cap);
     error Slippage(uint256 got, uint256 wanted);
@@ -112,6 +128,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         AggregatorV3Interface oracle_,
         uint32 maxStaleness_,
         uint16 feeBps_,
+        uint16 reserveShareBps_,
         uint256 maxShares_,
         address admin,
         address guardian,
@@ -120,6 +137,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         if (address(musd_) == address(0) || address(oracle_) == address(0)) revert ZeroAddress();
         if (admin == address(0) || guardian == address(0) || treasurer == address(0)) revert ZeroAddress();
         if (feeBps_ > MAX_FEE_BPS) revert FeeTooHigh(feeBps_);
+        if (reserveShareBps_ > BPS) revert ShareTooHigh(reserveShareBps_);
         if (maxStaleness_ == 0 || maxShares_ == 0) revert ZeroAmount();
 
         musd = musd_;
@@ -128,6 +146,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         oracleDecimals = oracle_.decimals();
         maxStaleness = maxStaleness_;
         feeBps = feeBps_;
+        reserveShareBps = reserveShareBps_;
         maxShares = maxShares_;
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -205,9 +224,15 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         uint256 supplyAfter = share.totalSupply() + sharesOut;
         if (supplyAfter > maxShares) revert CapExceeded(supplyAfter, maxShares);
 
-        feesAccrued += fee;
+        /* Both halves come from the undivided product rather than from `fee`,
+           so the split does not compound the fee's own truncation. The
+           treasury's half is the remainder, which keeps the two halves
+           summing to exactly `fee` with no wei stranded in neither pot. */
+        uint256 toReserves = (musdAmount * feeBps * reserveShareBps) / (BPS * BPS);
+        feesAccrued += fee - toReserves;
         musd.safeTransferFrom(msg.sender, address(this), musdAmount);
         share.mint(msg.sender, sharesOut);
+        if (toReserves != 0) emit ReservesTopped(toReserves, reserves());
 
         emit Bought(msg.sender, musdAmount, fee, sharesOut, p);
     }
@@ -241,9 +266,13 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         uint256 available = reserves();
         if (gross > available) revert InsufficientReserves(gross, available);
 
-        feesAccrued += fee;
+        // Same treatment as in buy(): the undivided product, so the two
+        // divisions do not stack.
+        uint256 toReserves = (shares * p * feeBps * reserveShareBps) / (SHARE_ONE * BPS * BPS);
+        feesAccrued += fee - toReserves;
         share.burnFrom(msg.sender, shares);
         musd.safeTransfer(msg.sender, musdOut);
+        if (toReserves != 0) emit ReservesTopped(toReserves, reserves());
 
         emit Redeemed(msg.sender, shares, fee, musdOut, p);
     }
@@ -274,6 +303,24 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         if (newFeeBps > MAX_FEE_BPS) revert FeeTooHigh(newFeeBps);
         feeBps = newFeeBps;
         emit FeeSet(newFeeBps);
+    }
+
+    /**
+     * @notice Change the share of fees that stays in reserves.
+     * @dev Up to 100%: a vault whose index has run away from its reserves may
+     *      rationally send every fee to the backstop until the gap closes.
+     */
+    function setReserveShareBps(uint16 newShareBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newShareBps > BPS) revert ShareTooHigh(newShareBps);
+        reserveShareBps = newShareBps;
+        emit ReserveShareSet(newShareBps);
+    }
+
+    /// @notice Reserves as a fraction of liabilities, in basis points.
+    function coverageBps() external view returns (uint256) {
+        uint256 owed = liabilities();
+        if (owed == 0) return BPS;
+        return (reserves() * BPS) / owed;
     }
 
     function setMaxShares(uint256 newMaxShares) external onlyRole(DEFAULT_ADMIN_ROLE) {

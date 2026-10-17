@@ -54,6 +54,48 @@ those chains use mock tokens under the `leek` prefix.
 No testnet MEZO address is published in Mezo's contracts reference; the faucet
 hands out test MEZO, so the address can be read from a faucet transaction.
 
+## Two MUSD contracts on Mezo testnet, and which one to use
+
+**Resolved on 2026-10-17 by asking the chain.** There are two live tokens on
+Mezo testnet (31611) that both answer `symbol() = "MUSD"` with 18 decimals:
+
+| Address | Code size | `BorrowerOperations` may mint it | What it is |
+|---|---|---|---|
+| `0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503` | 6,438 bytes | **no** (`mintList = false`) | the one Mezo's public contracts reference lists as "Testnet MUSD" |
+| `0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af` | 9,011 bytes | **yes** (`mintList = true`) | the one the **live borrow system** mints, named "Mezo USD" |
+
+Evidence, reproducible:
+
+```sh
+R=https://rpc.test.mezo.org
+# The deployed BorrowerOperations names its own token and trove manager.
+cast call 0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba "musd()(address)" --rpc-url $R
+#   -> 0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af
+cast call 0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba "troveManager()(address)" --rpc-url $R
+#   -> 0x7FE0A5a7EeBD88530c58824475edEae33424671F   (matches the file below)
+# And only one of the two tokens grants it mint rights.
+cast call 0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af "mintList(address)(bool)"   0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba --rpc-url $R   # true
+cast call 0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503 "mintList(address)(bool)"   0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba --rpc-url $R   # false
+```
+
+So `SCALE_TEST_ADDRESSES.md` in `mezo-org/musd` is **not** stale or wrong: its
+addresses are live on Mezo testnet and they are the borrow system's. What is
+misleading is reading either source alone. The documented address is a
+different deployment of the same token contract, and the borrow system cannot
+mint it.
+
+**Which one we settle in, and why.** The vault's settlement token is a
+constructor parameter, so this is a deployment choice rather than a code
+change. Settling in **`0xf9BBcC…`**, the borrowable one, is what makes the
+whole demo join up: borrow MUSD against BTC through Mezo's own protocol, then
+buy a parody index with it, then approve the purchase on hardware that decoded
+the calldata itself. Settling in the documented token would leave a user who
+borrowed holding the wrong MUSD, and the error would be a plain allowance
+failure that explains nothing.
+
+**Confirm before deploying** by re-running the two `mintList` calls above: if
+Mezo redeploys the trove system, the answer moves and this section is stale.
+
 ## Mezo's own lending (not ours)
 
 Borrowing MUSD against BTC on Mezo is Mezo's protocol, and we integrate it
@@ -62,14 +104,24 @@ rather than reimplement it. The interface is in `mezo-org/musd`
 `withdrawMUSD`, `repayMUSD`, `closeTrove`, `adjustTrove`, every parameter
 statically typed.
 
-**The deployed testnet addresses are not published** and are deliberately
-absent here rather than guessed. Note the trap: `SCALE_TEST_ADDRESSES.md` in
-that repository lists a full set, but its MUSD is `0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af`,
-which is **not** the documented testnet MUSD above. That file is a different
-deployment and must not be used as the testnet address book. Close the gap by
-reading `BorrowerOperationsAddressAdded` from the MUSD contract (chunked: the
-public RPC caps `eth_getLogs` at 10,000 blocks) or by taking the addresses from
-the testnet dApp and confirming each against MUSD's `mintList`/`burnList`.
+**Deployed on Mezo testnet, confirmed live on 2026-10-17** by `eth_getCode`
+and by the cross-checks in the section above. These come from
+`SCALE_TEST_ADDRESSES.md` in `mezo-org/musd`, and the chain agrees with them:
+
+| Contract | Address |
+|---|---|
+| `BorrowerOperations` | `0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba` |
+| `TroveManager` | `0x7FE0A5a7EeBD88530c58824475edEae33424671F` |
+| `MUSD` (the borrowable one) | `0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af` |
+| `PriceFeed` | `0xf28B0d5165b4ad9D5C04CdE1E37B400f8ca5A8cb` |
+| `StabilityPool` | `0xCfdb903cD2Dc14E24e78130A63b20Ba65107262A` |
+| `HintHelpers` | `0x8ed65f0Df4B1145f8E6D298735d0F77bFb5f0136` |
+| `InterestRateManager` | `0x25D5267a70Ee9a4801BcBDBABe513034926a8559` |
+
+`BorrowerOperations` and `TroveManager` are 1,160 bytes each, which is proxy
+size, so the implementations behind them can change without these addresses
+changing. Verify with `cast call` before relying on any of them, and prefer
+asking a contract for its peers (as above) over trusting a list.
 
 ## Ours
 

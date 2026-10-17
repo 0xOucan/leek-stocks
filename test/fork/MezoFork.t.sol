@@ -179,8 +179,13 @@ contract MezoForkTest is Test {
         assertEq(sharesOut, expectedShares, "shares minted do not match the oracle price");
         assertEq(share.balanceOf(alice), sharesOut, "share token did not credit the buyer");
         assertEq(IERC20(MUSD).balanceOf(address(vault)), spend, "vault received something other than the full amount");
-        assertEq(vault.feesAccrued(), expectedFee, "fee accrued is not 0.5% of the spend");
-        assertEq(vault.reserves(), spend - expectedFee, "reserves double-count the fee");
+        /* The fee splits: half to the treasury, half left in reserves. That
+           split is the funded backstop (H-1a) and it is asserted here, on the
+           live token, because a buy that did not top up reserves would leave
+           the H-1 shortfall growing with every trade. */
+        assertEq(vault.feesAccrued(), expectedFee / 2, "the treasury's half of the fee is wrong");
+        assertEq(vault.reserves(), spend - expectedFee / 2, "the reserve half of the fee did not stay");
+        assertGt(vault.coverageBps(), 10_000, "a fresh buy must leave reserves above liabilities");
 
         // Redeeming the whole position at an unchanged price must lose exactly
         // two fees and nothing else, which is L-6's round trip on real MUSD.
@@ -206,7 +211,7 @@ contract MezoForkTest is Test {
 
         ETFFactory factory = new ETFFactory(IERC20(MUSD), admin);
         vm.prank(admin);
-        factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, CAP, guardian, treasurer);
+        factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, 5000, CAP, guardian, treasurer);
         (address shareAddress, address vaultAddress) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         return (IssuanceVault(vaultAddress), ETFShare(shareAddress));
     }
