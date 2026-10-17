@@ -67,6 +67,13 @@ demonstration of issuance, pricing and hardware-confirmed signing. It is not a
 fund, and nobody should put money in it. See
 [audit/AUDIT-REPORT.md](audit/AUDIT-REPORT.md), finding H-1.
 
+## Front end
+
+[web/](web/) is the dapp: prices, buy and redeem, and the vault's reserves
+against its liabilities. Vite, TypeScript and viem with no framework, served as
+a static container; `web/README.md` records why it diverges from the mandated
+Scaffold-ETH 2 starter and what the bundle costs.
+
 ## Audit
 
 [audit/AUDIT-REPORT.md](audit/AUDIT-REPORT.md) applies the ethskills EVM audit

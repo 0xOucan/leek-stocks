@@ -1,0 +1,21 @@
+# The build context is the repository root, because the Dockerfile copies
+# web/. Everything below is either rebuilt in the image, irrelevant to it, or
+# must never enter it.
+**/node_modules
+**/dist
+**/.env
+**/.env.local
+.git
+.github
+cache
+out
+broadcast
+lib
+.venv
+audit
+script
+src
+test
+feed
+foundry.lock
+*.md

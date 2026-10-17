@@ -1,0 +1,86 @@
+{{HOSTNAME}} {
+    encode zstd gzip
+
+    # The feed's read-only price endpoint, proxied from this host so the
+    # browser's request is same-origin: no CORS preflight, and no second
+    # origin to open in connect-src below. /prices and nothing else - the
+    # feed's /healthz is reachable on its own hostname and has no business
+    # being answered here.
+    @prices path /prices
+    handle @prices {
+        reverse_proxy oucan-leekdefi-feed:8787 {
+            # A cached price is a wrong price: the page polls every five
+            # seconds precisely so the number on screen is current.
+            header_down Cache-Control "no-store"
+            header_down -Access-Control-Allow-Origin
+        }
+    }
+
+    # Hashed asset filenames, so these are safe to cache for a year; the
+    # entry HTML below is not, or a deploy would not reach anyone.
+    @assets path /assets/* /fonts/*
+    handle @assets {
+        reverse_proxy {{UPSTREAM}}:{{PORT}} {
+            header_down Cache-Control "public, max-age=31536000, immutable"
+        }
+    }
+
+    handle {
+        reverse_proxy {{UPSTREAM}}:{{PORT}}
+    }
+
+    header {
+        -Server
+        # Worked out from what the code actually calls, entry by entry:
+        #
+        #   default-src 'self'   everything not listed below comes from here.
+        #   script-src  'self'   no 'unsafe-eval': nothing in this app or in
+        #                        WalletConnect's modal compiles code at
+        #                        runtime, and leaving eval open is the single
+        #                        largest CSP concession there is.
+        #   style-src   'self'   the stylesheet is a file. Fonts are
+        #                        self-hosted woff2 under /fonts, which is why
+        #                        this and font-src need no Google origins.
+        #   style-src-attr 'unsafe-inline'
+        #                        WalletConnect's modal is a Lit web component
+        #                        that sets style attributes on its own
+        #                        elements. Scoped to attributes rather than
+        #                        opened in style-src, so an injected <style>
+        #                        block is still refused.
+        #   img-src 'self' data: https://explorer-api.walletconnect.com
+        #                        EIP-6963 wallets announce their icon as a
+        #                        data: URI, which is where every extension
+        #                        icon on the page comes from; the
+        #                        explorer-api host serves the wallet logos
+        #                        inside the WalletConnect modal.
+        #   connect-src          'self' covers /prices, which is proxied
+        #                        above and therefore same-origin - it is
+        #                        deliberately NOT listed as an origin here.
+        #                        Setting VITE_FEED_URL to an absolute URL
+        #                        would require adding that origin.
+        #                        https://rpc.test.mezo.org is the chain read
+        #                        path (balances, reserves, liabilities,
+        #                        receipts) and is Mezo's only public testnet
+        #                        endpoint.
+        #                        wss://relay.walletconnect.org is the relay
+        #                        the phone pairing runs over; the https form
+        #                        is its HTTP fallback and its publish
+        #                        endpoint.
+        #                        explorer-api is the wallet registry the
+        #                        modal reads; pulse is the telemetry endpoint
+        #                        the provider posts to - listed because
+        #                        blocking it shows as a console error that
+        #                        looks like a pairing failure.
+        #   frame-src https://verify.walletconnect.org
+        #                        the provider loads this origin in a hidden
+        #                        iframe to attest the dapp's domain; without
+        #                        it pairing logs a frame violation.
+        #   base-uri/form-action/object-src 'none'
+        #                        this page has no forms, no plugins and no
+        #                        reason to allow a <base> rewrite.
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://explorer-api.walletconnect.com; connect-src 'self' https://rpc.test.mezo.org wss://relay.walletconnect.org https://relay.walletconnect.org https://explorer-api.walletconnect.com https://pulse.walletconnect.org; frame-src https://verify.walletconnect.org; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+}
