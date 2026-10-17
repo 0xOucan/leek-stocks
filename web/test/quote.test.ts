@@ -54,3 +54,33 @@ test("solvency names the shortfall, which is finding H-1 made visible", () => {
 test("a vault with no shares outstanding is not reported as short", () => {
   assert.deepEqual(solvency(0n, 0n), { short: false, shortfall: 0n, coverageBps: null });
 });
+
+test("a round trip loses exactly the buy fee plus the redeem fee", () => {
+  // The figures a live vault produced on a local chain: 1000 MUSD in at a
+  // 200e8 feed answer came back as 990.025 MUSD, and the 9.975 missing is
+  // the two fees and nothing else. Pinned here because a rounding change
+  // that quietly took a third fee would still leave every other assertion
+  // in this file green.
+  const spend = 1000n * ONE;
+  const bought = quoteBuy(spend, PRICE, 50);
+  const back = quoteRedeem(bought.sharesOut, PRICE, 50);
+  assert.equal(back.musdOut, 990_025_000_000_000_000_000n);
+  assert.equal(spend - back.musdOut, bought.fee + back.fee);
+});
+
+test("coverage after one buy is the vault's own coverageBps", () => {
+  // Measured on chain after that same buy: reserves 997.5 MUSD against
+  // liabilities of 995, because half of the 5 MUSD fee stays in reserves.
+  const view = solvency(997_500_000_000_000_000_000n, 995n * ONE);
+  assert.equal(view.short, false);
+  assert.equal(view.shortfall, 0n);
+  assert.equal(view.coverageBps, 10_025);
+});
+
+test("an amount too small to mint a share quotes zero, so the page can refuse first", () => {
+  // buy() reverts with ZeroAmount when sharesOut rounds to nothing. The
+  // quote has to show that before anyone signs, rather than after.
+  const quote = quoteBuy(100n, PRICE, 50);
+  assert.equal(quote.sharesOut, 0n);
+  assert.ok(quote.net > 0n);
+});
