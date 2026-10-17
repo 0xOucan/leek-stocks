@@ -18,3 +18,5 @@ broadcast/
 .env
 .gas-snapshot.tmp
 .venv/
+
+# Container build context excludes everything but what the Dockerfile copies.
