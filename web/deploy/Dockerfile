@@ -11,7 +11,9 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 # Every VITE_* value is baked in here, at build time, and is public from then
-# on. vpsinfra passes them as build args; nothing secret may be among them.
+# on. The live defaults below make a plain vpsinfra build complete; future
+# deployments may override them with build args. Nothing secret may be among
+# them.
 #
 # The defaults ARE the live deployment, not placeholders.
 #
@@ -27,7 +29,7 @@ COPY web/ ./
 # duplicate of ADDRESSES.md that can drift into being wrong - it can only
 # drift into being old, which check-bundle.mjs below turns into a failed
 # build rather than a quiet one. Override any of them with --build-arg.
-ARG VITE_REOWN_PROJECT_ID=""
+ARG VITE_REOWN_PROJECT_ID="47d6b12386de55042b12dfbc95f7b44f"
 ARG VITE_RPC_URL="https://rpc.test.mezo.org"
 ARG VITE_CHAIN_ID="31611"
 ARG VITE_FEED_URL=""

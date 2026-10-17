@@ -288,7 +288,7 @@ What it found, and why each is fine:
 |---|---|
 | `feed/.env.example` → `PUBLISHER_PRIVATE_KEY=0x000…000` | a 32-byte zero placeholder |
 | `scripts/local-up.sh` → `0xac0974be…f2ff80` | **Anvil account 0**, a key published in Foundry's own documentation and already annotated as such. Worthless by design; do not "fix" it |
-| `web/deploy/leekdefi.env`, `feed/deploy/leekdefi-feed.env` | registry entries. No secrets: hostnames, ports, limits, and a WalletConnect project id, which is a public client identifier |
+| `web/deploy/leekdefi.env`, `feed/deploy/leekdefi-feed.env` | registry entries. No secrets: hostnames, ports and limits. The public WalletConnect client identifier is a live default in the dapp Dockerfile |
 
 Zero hits for PEM private keys, mnemonics, seed phrases, Cloudflare API
 tokens, Tailscale auth keys (`tskey-`), GitHub tokens (`ghp_`,
