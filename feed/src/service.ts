@@ -281,7 +281,28 @@ export class FeedService {
             args: [decision.answer],
           });
           await publicClient.waitForTransactionReceipt({ hash });
-          state.onChainAnswer = decision.answer.toString();
+
+          /* Re-read, rather than only writing the answer back.
+             Setting onChainAnswer alone left onChainRound and
+             onChainUpdatedAt holding their pre-publish values, so /prices
+             reported a fresh answer beside a timestamp minutes old - a
+             working feed that reads as a stale one, which is exactly the
+             thing a monitor would page someone about.
+             Re-read instead of assuming round + 1 and now: the round is the
+             chain's to say, not ours, and another holder of PUBLISHER_ROLE
+             would make a derived guess quietly wrong. On a failed read the
+             three fields stay as they were and the next cycle corrects
+             them. */
+          const after = await publicClient
+            .readContract({ address: oracle, abi: ORACLE_ABI, functionName: "latestRoundData" })
+            .catch(() => null);
+          if (after) {
+            state.onChainRound = (after[0] as bigint).toString();
+            state.onChainAnswer = (after[1] as bigint).toString();
+            state.onChainUpdatedAt = Number(after[3] as bigint);
+          } else {
+            state.onChainAnswer = decision.answer.toString();
+          }
         }
         state.lastError = null;
       } catch (error) {
