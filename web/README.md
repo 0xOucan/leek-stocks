@@ -33,7 +33,7 @@ general preferences:
    job is a wallet list we can build from the event in forty lines, and it
    would still need custom work for a wallet that is not in its registry.
 3. **Minimal resource use was the explicit requirement.** The initial bundle
-   is **58.3 kB gzipped of JavaScript** plus 2.3 kB of CSS. A Next +
+   is **59.3 kB gzipped of JavaScript** plus 2.3 kB of CSS. A Next +
    RainbowKit + wagmi starter is an order of magnitude more, most of it
    parsed on every cold load, and the user asked for something that "doesn't
    consume much RAM and resources".
@@ -48,7 +48,7 @@ favicon, title and Open Graph tags.
 
 | | raw | gzipped |
 |---|---|---|
-| entry JS | 195 kB | **58.3 kB** |
+| entry JS | 199 kB | **59.3 kB** |
 | CSS | 9.5 kB | 2.3 kB |
 | `index.html` | 1.7 kB | 0.8 kB |
 
@@ -68,9 +68,38 @@ Two further measurements worth keeping:
   `waitForTransactionReceipt` imported from `viem/actions`, not
   `createPublicClient`. The public client attaches every public action to the
   object, which defeats tree-shaking: it measured **98.6 kB gzipped** in the
-  entry chunk against 58.3 kB this way.
+  entry chunk against 59.3 kB this way.
 - The ABIs are hand-written `as const` fragments covering only the functions
   this page calls, not Foundry artifacts.
+
+## The faucet, and what is not here
+
+**Lending is not built.** On Mezo the dapp will use Mezo's own native borrow
+protocol; on other chains it will use the market in the sibling `leek-lend`
+repository. Neither is deployed, so the title's promise is kept to one honest
+line in the footer: no tab, no dead link, and no stub that looks interactive.
+
+**The faucet section** covers the chains where the real MUSD does not exist
+and the protocol ships its own mock tokens plus a rate-limited `TokenFaucet`.
+It claims one token at a time, each button with its own pending state, and it
+**reads the cooldown and shows "available again in N minutes" before the
+click** — a revert the UI could have predicted is a UI bug. With no
+`VITE_FAUCET` configured it says so in a line, exactly as an unconfigured
+vault does, and on a mainnet chain id it does not render at all, because the
+contract refuses those ids by construction.
+
+Mock symbols carry a **`leek` prefix** — leekMUSD, leekwBTC, leekWETH —
+because Mezo's own bridged tokens use `m`: `mUSDC`, `mUSDT` and `mDAI` are
+real contracts, so a mock named `mMUSD` would read as one of theirs. Nothing
+in the UI hardcodes a symbol: each one is read from its token, and a token
+that will not report a symbol and decimals is not rendered, because the symbol
+beside an amount is the user's only clue which asset they are about to spend.
+
+`TokenFaucet` is not written yet, so **its ABI in `src/faucet.ts` is an
+assumption**: the cooldown is read as `nextClaimAt(token, account)` with a
+fallback to `cooldown()` plus `lastClaim(token, account)`, and every read
+tolerates a revert so a mismatch degrades to "claim and find out" rather than
+to an empty section. It must be checked against the deployed contract.
 
 ## Running it
 
@@ -190,12 +219,13 @@ with why it is there.
 | `src/lib/errors.ts` | every custom error decodes to a sentence; nested provider shapes; unknown selectors; wallet codes |
 | `src/lib/format.ts` | address truncation, bounded fractions, input parsing and its rejections, ages |
 | `src/lib/quote.ts` | buy and redeem maths against the contract's rounding, round trips, slippage, the H-1 shortfall |
-| `src/lib/staleness.ts` | the freshness boundary the vault enforces |
+| `src/lib/staleness.ts` | the freshness boundary the vault enforces, and the faucet cooldown |
 
 **What is not tested.** The contracts are not deployed, so nothing here has
 been exercised against a live vault, oracle or MUSD: no buy, no redeem, no
 approval, no revert decoded from a real transaction, no chain switch in a real
-wallet. The quote maths is asserted against the figures in the contracts and
+wallet, and no faucet claim. The faucet's ABI is a guess at a contract that
+does not exist yet. The quote maths is asserted against the figures in the contracts and
 the fork test (1000 MUSD at a 200 price mints 4.975 shares), not against a
 chain. The WalletConnect path has never completed a pairing, and the CSP's
 WalletConnect entries are derived from what the provider documents it contacts

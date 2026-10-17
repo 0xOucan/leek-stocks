@@ -26,6 +26,14 @@ function feedEndpointFrom(value: string | undefined): string {
   return trimmed.endsWith("/prices") ? trimmed : `${trimmed}/prices`;
 }
 
+/** A comma-separated list, with anything unparseable dropped rather than shown. */
+function addressList(value: string | undefined): readonly Address[] {
+  return String(value ?? "")
+    .split(",")
+    .map((entry: string) => optionalAddress(entry))
+    .filter((entry): entry is Address => entry !== undefined);
+}
+
 export interface MarketConfig {
   readonly symbol: string;
   readonly name: string;
@@ -60,6 +68,14 @@ export const CONFIG = {
   publicUrl: import.meta.env.VITE_PUBLIC_URL ?? "",
   reownProjectId: import.meta.env.VITE_REOWN_PROJECT_ID ?? "",
   musd: optionalAddress(import.meta.env.VITE_MUSD),
+  /** The test-token faucet, on chains where the real MUSD does not exist. */
+  faucet: optionalAddress(import.meta.env.VITE_FAUCET),
+  /**
+   * The tokens that faucet serves. A list rather than one variable per token,
+   * because the set differs per chain and the page reads each token's symbol
+   * and decimals from the token itself.
+   */
+  faucetTokens: addressList(import.meta.env.VITE_FAUCET_TOKENS),
 } as const;
 
 /** Nothing on this page works without a vault address, so it has one check. */

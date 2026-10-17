@@ -28,3 +28,26 @@ export function freshness(
   if (age < 0) return { state: "fresh", ageSeconds: 0 };
   return { state: age > maxStaleness ? "stale" : "fresh", ageSeconds: age };
 }
+
+/**
+ * Whether a faucet claim is available yet, and how long until it is.
+ *
+ * Computed and shown before the button is pressed: a cooldown the user
+ * discovers by watching a transaction revert is a UI bug, not a contract
+ * behaviour. Pure for the same reason as `freshness` - the clock is an
+ * argument, so the test is not time-dependent.
+ */
+export interface ClaimAvailability {
+  readonly ready: boolean;
+  /** Seconds until the next claim, zero when it is available now. */
+  readonly waitSeconds: number;
+}
+
+export function claimAvailability(nextClaimAt: number | null, nowSeconds: number): ClaimAvailability {
+  // Unknown reads as available: the faucet's own check is authoritative, and
+  // disabling a button because a view function could not be read would hide a
+  // working faucet behind a failed guess at its ABI.
+  if (nextClaimAt === null || nextClaimAt <= 0) return { ready: true, waitSeconds: 0 };
+  const wait = nextClaimAt - nowSeconds;
+  return wait <= 0 ? { ready: true, waitSeconds: 0 } : { ready: false, waitSeconds: wait };
+}

@@ -17,7 +17,8 @@ import { pollFeed, type FeedSnapshot, type IndexStatus } from "./feed.ts";
 import { describeError } from "./lib/errors.ts";
 import { formatAge, formatAmount, formatIndexValue, parseAmount, truncateAddress } from "./lib/format.ts";
 import { applySlippage, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
-import { freshness } from "./lib/staleness.ts";
+import { claimAvailability, freshness } from "./lib/staleness.ts";
+import { faucetAllowedOnChain, readFaucetToken, FAUCET_ABI, type FaucetToken } from "./faucet.ts";
 import { readBalances, readMarket, type Balances, type MarketState } from "./market.ts";
 import {
   actionButton,
@@ -46,6 +47,8 @@ interface State {
   market: MarketState | null;
   balances: Balances | null;
   /** Per-section messages, kept beside the control that produced them. */
+  faucetTokens: readonly FaucetToken[] | null;
+  faucetMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
   walletMessage: string | null;
   tradeMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
   approveMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
@@ -60,6 +63,8 @@ const state: State = {
   slippageBps: DEFAULT_SLIPPAGE_BPS,
   market: null,
   balances: null,
+  faucetTokens: null,
+  faucetMessage: null,
   walletMessage: null,
   tradeMessage: null,
   approveMessage: null,
@@ -114,6 +119,7 @@ const sections = {
   indices: el("section", { class: "panel", id: "indices", "aria-labelledby": "indices-heading" }),
   trade: el("section", { class: "panel", id: "trade", "aria-labelledby": "trade-heading" }),
   position: el("section", { class: "panel", id: "position", "aria-labelledby": "position-heading" }),
+  faucet: el("section", { class: "panel", id: "faucet", "aria-labelledby": "faucet-heading" }),
 };
 
 export function mount(): void {
@@ -132,6 +138,7 @@ export function mount(): void {
     sections.indices,
     sections.trade,
     sections.position,
+    sections.faucet,
     el("footer", { class: "footnote" }, [
       el("p", {}, [
         "A share is priced from an index the vault does not hold, so the MUSD paid in by buyers can be less than the MUSD owed to redeemers. Redemption reverts when reserves are short rather than paying part of it. See audit finding H-1.",
@@ -177,6 +184,7 @@ function renderAll(): void {
   renderIndices();
   renderTrade();
   renderPosition();
+  renderFaucet();
 }
 
 /* ------------------------------------------------------------------- reads */
@@ -189,9 +197,19 @@ async function refreshChain(): Promise<void> {
   if (connection && CONFIG.musd && market.share && market.vault) {
     state.balances = await readBalances(connection.address, CONFIG.musd, market.share, market.vault);
   }
+  if (connection && CONFIG.faucet && faucetAllowedOnChain(connection.chainId)) {
+    const faucet = CONFIG.faucet;
+    const tokens = await Promise.all(
+      CONFIG.faucetTokens.map((token) => readFaucetToken(faucet, token, connection.address)),
+    );
+    state.faucetTokens = tokens.filter((token): token is FaucetToken => token !== null);
+  } else {
+    state.faucetTokens = null;
+  }
   renderIndices();
   renderTrade();
   renderPosition();
+  renderFaucet();
 }
 
 /* ------------------------------------------------------------- wallet bar */
@@ -740,6 +758,115 @@ function renderTrade(): void {
   }
 
   renderQuote();
+}
+
+/* ------------------------------------------------------------------ faucet */
+
+function renderFaucet(): void {
+  clear(sections.faucet);
+  const connection = state.connection;
+
+  // Not shown at all on a mainnet: the contract refuses those chain ids by
+  // construction, so an explanation would be noise on a page where the faucet
+  // is simply not a thing that exists.
+  if (connection && !faucetAllowedOnChain(connection.chainId)) return;
+
+  sections.faucet.append(el("h2", { id: "faucet-heading" }, ["Get test tokens"]));
+
+  if (!CONFIG.faucet) {
+    sections.faucet.append(
+      notice(
+        "warning",
+        "No faucet is configured in this build. On Mezo testnet the settlement token is the real MUSD, so there is nothing to mint; on the chains where the protocol ships its own mock tokens, set VITE_FAUCET once the faucet is deployed.",
+      ),
+    );
+    return;
+  }
+  if (!connection) {
+    sections.faucet.append(el("p", { class: "muted" }, ["Connect a wallet to claim test tokens."]));
+    return;
+  }
+
+  const tokens = state.faucetTokens;
+  if (tokens === null) {
+    sections.faucet.append(el("p", { class: "muted" }, ["Reading the faucet\u2026"]));
+    return;
+  }
+  if (tokens.length === 0) {
+    sections.faucet.append(
+      notice("warning", "The configured faucet reports no tokens this page can read, so there is nothing to claim yet."),
+    );
+    return;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const grid = el("div", { class: "grid" });
+  for (const token of tokens) {
+    const availability = claimAvailability(token.nextClaimAt, now);
+    // Each claim owns its own pending state, so one token in flight does not
+    // grey out the others.
+    const button = actionButton({
+      label: `Claim ${token.symbol}`,
+      pendingLabel: "Claiming\u2026",
+      variant: "secondary",
+      onClick: async () => {
+        state.faucetMessage = null;
+        try {
+          const wallet = walletClientFor(connection.provider, connection.address);
+          const hash = await writeContract(wallet, {
+            address: CONFIG.faucet as Address,
+            abi: FAUCET_ABI,
+            functionName: "claim",
+            args: [token.address],
+          });
+          await sendAndWait(hash);
+          await refreshChain();
+          state.faucetMessage = { kind: "ok", text: `Claimed ${token.symbol}. Your balance is below.` };
+        } catch (error) {
+          const explained = describeError(error);
+          state.faucetMessage = { kind: "error", text: explained.message, name: explained.name };
+        } finally {
+          renderFaucet();
+          renderPosition();
+        }
+      },
+    });
+    // The cooldown is read and shown before the click. A revert the UI could
+    // have predicted is a UI bug, not a contract behaviour.
+    if (!availability.ready) {
+      button.setBlocked(`You can claim ${token.symbol} again in ${formatAge(availability.waitSeconds).replace(" ago", "")}.`);
+    }
+
+    grid.append(
+      el("article", { class: "card" }, [
+        el("div", { class: "card-head" }, [
+          el("div", {}, [
+            // The symbol comes from the token, never from this page: on a
+            // chain with mocks, that symbol is the only thing distinguishing
+            // leekMUSD from the real MUSD on Mezo.
+            el("h3", { class: "mono" }, [token.symbol]),
+            el("p", { class: "muted small" }, [
+              token.dripAmount === null
+                ? "Claim amount is set by the faucet."
+                : `${formatAmount(token.dripAmount, token.decimals, 4)} per claim`,
+            ]),
+          ]),
+          addressChip(token.address, truncateAddress(token.address), explorerAddressUrl(token.address)),
+        ]),
+        stat("Your balance", formatAmount(token.balance, token.decimals, 6), formatUnits(token.balance, token.decimals)),
+        availability.ready
+          ? null
+          : el("p", { class: "muted small" }, [
+              `Available again in ${formatAge(availability.waitSeconds).replace(" ago", "")}.`,
+            ]),
+        button.element,
+      ].filter((node): node is HTMLElement => node !== null)),
+    );
+  }
+  sections.faucet.append(grid);
+  if (state.faucetMessage) {
+    sections.faucet.append(notice(state.faucetMessage.kind, state.faucetMessage.text, state.faucetMessage.name));
+  }
 }
 
 /* ---------------------------------------------------------------- position */
