@@ -1,0 +1,30 @@
+# Public surface of the price feed: the health path, and nothing else.
+#
+# The dapp does not use this hostname. It calls `/prices` on its own origin,
+# which Caddy proxies to this container internally (see the dapp's template),
+# so prices reach the browser without a second origin in the CSP.
+#
+# This hostname exists because vpsinfra's deploy gate validates a health path
+# over HTTP. Everything else answers 404 rather than 403: a 403 confirms a
+# route exists, and there is nothing to be gained by confirming it.
+{{HOSTNAME}} {
+    encode zstd gzip
+
+    @health path /healthz
+    handle @health {
+        reverse_proxy {{UPSTREAM}}:{{PORT}}
+    }
+
+    handle {
+        respond 404
+    }
+
+    header {
+        -Server
+        # No page is served here, so nothing may be loaded, framed or connected.
+        Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+}
