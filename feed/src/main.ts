@@ -34,7 +34,8 @@ function loadDotEnv(path = ".env"): void {
     const key = line.slice(0, eq).trim();
     if (key in process.env) continue;
     let value = line.slice(eq + 1).trim();
-    if (value.length > 1 && (value.startsWith('"') || value.startsWith("'")) && value.endsWith(value[0])) {
+    const quote = value[0];
+    if (value.length > 1 && quote !== undefined && (quote === '"' || quote === "'") && value.endsWith(quote)) {
       value = value.slice(1, -1);
     }
     process.env[key] = value;

@@ -11,12 +11,13 @@ import { chainFor, configFromEnv, eip7623FloorGas, FeedService, mezoTestnet } fr
  * to import the module.
  */
 
-const KEY = `0x${"11".repeat(32)}`;
+const KEY: `0x${string}` = `0x${"11".repeat(32)}`;
 
 test("the service module loads and constructs under type stripping", () => {
   const service = new FeedService({
     oracles: { GOLOGGLE: "0x0000000000000000000000000000000000000001" },
     rpcUrl: mezoTestnet.rpcUrls.default.http[0],
+    chainId: mezoTestnet.id,
     publisherKey: KEY,
     intervalSeconds: 60,
     heartbeatSeconds: 1800,

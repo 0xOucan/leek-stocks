@@ -1,6 +1,6 @@
-# The build context is the repository root, because the Dockerfile copies
-# web/. Everything below is either rebuilt in the image, irrelevant to it, or
-# must never enter it.
+# The deployment build context is the repository root because the two
+# Dockerfiles copy web/ and feed/ respectively. Everything below is rebuilt in
+# an image, irrelevant to both images, or must never enter the build context.
 **/node_modules
 **/dist
 **/.env
@@ -16,6 +16,5 @@ audit
 script
 src
 test
-feed
 foundry.lock
 *.md
