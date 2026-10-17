@@ -73,6 +73,39 @@ const ORACLE_ABI = [
   { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
 ] as const;
 
+/**
+ * The chain to publish to, resolved from configuration.
+ *
+ * It used to be Mezo testnet, hardcoded, while the RPC URL came from the
+ * environment — so reads followed the URL and writes were signed for 31611
+ * whatever node answered. An end-to-end rehearsal against a local chain
+ * failed with `invalid chain id for signer` on every publish, which is also
+ * why the bug survived this long: the publisher could only ever be exercised
+ * against the one network it was going to run on.
+ */
+export function chainFor(chainId: number, rpcUrl: string) {
+  if (chainId === mezoTestnet.id) return mezoTestnet;
+  if (chainId === 31_612) {
+    return defineChain({
+      id: 31_612,
+      name: "Mezo",
+      nativeCurrency: { name: "Bitcoin", symbol: "BTC", decimals: 18 },
+      rpcUrls: { default: { http: [rpcUrl] } },
+      blockExplorers: { default: { name: "Mezo Explorer", url: "https://explorer.mezo.org" } },
+    });
+  }
+  /* Anything else is a rehearsal target: a local chain or a fork. Named for
+     the log rather than pretended to be Mezo, and gas is left as the chain's
+     own 18-decimal unit because nothing here spends it beyond fees. */
+  return defineChain({
+    id: chainId,
+    name: `chain ${chainId}`,
+    nativeCurrency: { name: "Gas", symbol: "GAS", decimals: 18 },
+    rpcUrls: { default: { http: [rpcUrl] } },
+    testnet: true,
+  });
+}
+
 /** Mezo testnet. BTC is the gas token, with 18 decimals. */
 export const mezoTestnet = defineChain({
   id: 31_611,
@@ -107,6 +140,8 @@ export interface Config {
   readonly heartbeatSeconds: number;
   readonly thresholdBps: number;
   readonly httpPort: number;
+  /** Which chain to publish to. Defaults to Mezo testnet. */
+  readonly chainId: number;
   /** Use the deterministic series instead of the source. For a filmed demo. */
   readonly synthetic: boolean;
 }
@@ -140,6 +175,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     heartbeatSeconds: Number(env.HEARTBEAT_SECONDS ?? 1800),
     thresholdBps: Number(env.THRESHOLD_BPS ?? 50),
     httpPort: Number(env.HTTP_PORT ?? 8787),
+    chainId: Number(env.CHAIN_ID ?? mezoTestnet.id),
     synthetic: env.SYNTHETIC === "1",
   };
 }
@@ -192,8 +228,9 @@ export class FeedService {
     const shared = await this.sharedPrices();
     const account = privateKeyToAccount(this.config.publisherKey);
     const transport = http(this.config.rpcUrl);
-    const publicClient = createPublicClient({ chain: mezoTestnet, transport });
-    const walletClient = createWalletClient({ account, chain: mezoTestnet, transport });
+    const chain = chainFor(this.config.chainId, this.config.rpcUrl);
+    const publicClient = createPublicClient({ chain, transport });
+    const walletClient = createWalletClient({ account, chain, transport });
 
     for (const index of INDICES) {
       const oracle = this.config.oracles[index.symbol];
@@ -248,9 +285,21 @@ export class FeedService {
         }
         state.lastError = null;
       } catch (error) {
-        // The message only; a stack could carry a URL with a key in it.
-        state.lastError = error instanceof Error ? error.message : String(error);
-        console.error(`[${index.symbol}] ${state.lastError}`);
+        /* Redacted, because `/prices` is public and viem's full message is
+           not: it embeds the RPC URL, the entire eth_sendRawTransaction body
+           and the raw signed transaction. An earlier comment here claimed
+           taking `.message` was enough — it is not, and a production RPC URL
+           may carry an access token in its path. `shortMessage` is viem's own
+           one-liner; the name is the fallback, and the full text still goes to
+           the operator's log where only they can read it. */
+        const short = (error as { shortMessage?: unknown })?.shortMessage;
+        state.lastError =
+          typeof short === "string" && short.length > 0
+            ? short
+            : error instanceof Error
+              ? error.name
+              : "publish failed";
+        console.error(`[${index.symbol}]`, error);
       }
     }
   }

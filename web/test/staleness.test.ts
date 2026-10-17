@@ -21,12 +21,31 @@ test("a browser clock behind the chain's does not invent staleness", () => {
 });
 
 test("a faucet cooldown is reported before the click, not after a revert", () => {
-  assert.deepEqual(claimAvailability(NOW + 600, NOW), { ready: false, waitSeconds: 600 });
-  assert.deepEqual(claimAvailability(NOW, NOW), { ready: true, waitSeconds: 0 });
-  assert.deepEqual(claimAvailability(NOW - 1, NOW), { ready: true, waitSeconds: 0 });
+  // The contract's own verdict, not a reconstruction of it: claimStatus
+  // already accounts for the cooldown, the pause, the per-token enablement and
+  // the total cap, so anything computed here could only disagree with it.
+  assert.deepEqual(claimAvailability({ claimable: false, secondsRemaining: 600 }, NOW), {
+    ready: false,
+    waitSeconds: 600,
+  });
+  assert.deepEqual(claimAvailability({ claimable: true, secondsRemaining: 0 }, NOW), {
+    ready: true,
+    waitSeconds: 0,
+  });
 });
 
-test("an unreadable cooldown does not disable the button", () => {
+test("not claimable for a reason other than the clock still disables the button", () => {
+  // Paused, disabled, or the total cap reached: no time remains, and the claim
+  // would still revert. Reporting "ready" because the cooldown expired would
+  // be the UI predicting success the contract has already refused.
+  assert.deepEqual(claimAvailability({ claimable: false, secondsRemaining: 0 }, NOW), {
+    ready: false,
+    waitSeconds: 0,
+  });
+});
+
+test("an unreadable status does not disable the button", () => {
+  // Hiding a working faucet behind a failed read is worse than a claim that
+  // reverts and says why.
   assert.deepEqual(claimAvailability(null, NOW), { ready: true, waitSeconds: 0 });
-  assert.deepEqual(claimAvailability(0, NOW), { ready: true, waitSeconds: 0 });
 });

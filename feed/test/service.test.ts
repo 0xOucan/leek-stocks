@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { configFromEnv, FeedService, mezoTestnet } from "../src/service.ts";
+import { chainFor, configFromEnv, FeedService, mezoTestnet } from "../src/service.ts";
 
 /**
  * This file exists because the pure-function tests do not import the service,
@@ -65,4 +65,22 @@ test("configuration defaults are the documented ones", () => {
   assert.equal(config.thresholdBps, 50);
   assert.equal(config.synthetic, false, "the real source is the default, not the synthetic one");
   assert.equal(config.rpcUrl, mezoTestnet.rpcUrls.default.http[0]);
+});
+
+test("the publishing chain is configurable, and Mezo testnet is the default", () => {
+  // It was hardcoded to Mezo testnet while the RPC URL came from the
+  // environment, so every write was signed for 31611 whatever node answered.
+  // A local rehearsal failed with "invalid chain id for signer" on every
+  // publish, which is how the bug stayed hidden: the publisher could only be
+  // exercised against the one network it was going to run on.
+  const base = { PUBLISHER_PRIVATE_KEY: KEY, ORACLE_GOLOGGLE: "0x0000000000000000000000000000000000000001" };
+  assert.equal(configFromEnv(base).chainId, 31_611);
+  assert.equal(configFromEnv({ ...base, CHAIN_ID: "31337" }).chainId, 31_337);
+
+  assert.equal(chainFor(31_611, "http://x").name, "Mezo Testnet");
+  assert.equal(chainFor(31_612, "http://x").name, "Mezo");
+  assert.equal(chainFor(31_612, "http://x").nativeCurrency.symbol, "BTC");
+  // A rehearsal chain is named for what it is rather than dressed as Mezo.
+  assert.equal(chainFor(31_337, "http://x").id, 31_337);
+  assert.match(chainFor(31_337, "http://x").name, /31337/);
 });
