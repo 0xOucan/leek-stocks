@@ -56,8 +56,17 @@ npm test                 # pure functions: the transform and the publish policy
 npm start
 ```
 
-Endpoints: `GET /prices` (every index, its value, what is on chain, and the
-origin of the last answer) and `GET /healthz`.
+Endpoints: `GET /prices` and `GET /healthz`. Both report the **chain id**,
+and `/prices` also reports the chain's name, the RPC host (the host only: an
+RPC URL can carry a token in its path and this response is public) and whether
+the series is synthetic.
+
+That exists because two feeds can run at once — a local rehearsal and the real
+one — answering the same path on the same port. Without the chain in the
+response, telling them apart means noticing that a round number looks
+implausible, which is the kind of inference a status endpoint should spare you.
+The startup line says the same thing, and a port already in use now says so
+plainly instead of throwing.
 
 ## Deploy
 

@@ -349,18 +349,67 @@ export class FeedService {
       if (request.url === "/healthz") {
         const healthy = this.statusSnapshot().some((s) => s.value !== null);
         response.writeHead(healthy ? 200 : 503, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: healthy }));
+        response.end(JSON.stringify({ ok: healthy, chainId: this.config.chainId }));
         return;
       }
       if (request.url === "/prices") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ indices: this.statusSnapshot() }, null, 2));
+        /* The chain and the RPC host, not only the prices.
+         *
+         * Two feeds can run at once - a local rehearsal and the real one - and
+         * they answer the same path on the same port. Without this, telling
+         * them apart means noticing that a round number is implausible, which
+         * is exactly the kind of inference a status endpoint exists to spare
+         * you. It cost a confused five minutes to find out the hard way. The
+         * host only, never the full URL, because an RPC URL can carry a token
+         * in its path and this response is public. */
+        let rpcHost = "unknown";
+        try {
+          rpcHost = new URL(this.config.rpcUrl).host;
+        } catch {
+          /* a malformed URL is the caller's problem, not this endpoint's */
+        }
+        response.end(
+          JSON.stringify(
+            {
+              chainId: this.config.chainId,
+              chain: chainFor(this.config.chainId, this.config.rpcUrl).name,
+              rpcHost,
+              synthetic: this.config.synthetic,
+              indices: this.statusSnapshot(),
+            },
+            null,
+            2,
+          ),
+        );
         return;
       }
       response.writeHead(404).end();
     });
     this.server.listen(this.config.httpPort, () => {
-      console.log(`feed: http on :${this.config.httpPort}, publishing every ${this.config.intervalSeconds}s`);
+      const chain = chainFor(this.config.chainId, this.config.rpcUrl);
+      console.log(
+        `feed: ${chain.name} (${this.config.chainId}) via ${this.config.rpcUrl}, ` +
+          `http on :${this.config.httpPort}, every ${this.config.intervalSeconds}s, ` +
+          `${this.config.synthetic ? "SYNTHETIC series" : "real source"}`,
+      );
+      for (const index of INDICES) {
+        const oracle = this.config.oracles[index.symbol];
+        console.log(`  ${index.symbol.padEnd(10)} ${oracle ?? "(not configured)"}`);
+      }
+    });
+    this.server.on("error", (error: NodeJS.ErrnoException) => {
+      /* Said plainly, because the likeliest cause is the one that wasted time
+         here: another feed already running on this port, serving a different
+         chain's prices under the same path. */
+      if (error.code === "EADDRINUSE") {
+        console.error(
+          `feed: port ${this.config.httpPort} is already in use. Another feed is probably ` +
+            `running - check it is not pointed at a different chain - or set HTTP_PORT.`,
+        );
+        process.exit(1);
+      }
+      throw error;
     });
 
     const run = (): void => {
