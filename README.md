@@ -53,6 +53,14 @@ place.
 5. **Approve, then buy** index shares.
 6. **Redeem** back to MUSD whenever, at the oracle price, less the same fee.
 
+**Repaying, borrowing more and closing** are in the page too, on the same
+panel, once a position exists. The limits are the protocol's and each was
+simulated against the live contract before it was written down: a partial
+repayment cannot take the net debt under `minNetDebt`, closing needs the whole
+net debt in the wallet, and borrowing more is capped at 150% rather than the
+chain's 110%. ADDRESSES.md has the simulated boundaries and the exact revert
+strings. Repaying needs no approval — `BorrowerOperations` burns MUSD directly.
+
 The collateral ratio the page will open is **150%**, not the protocol's 110%
 minimum: a position opened at exactly MCR is liquidatable on the next tick of
 the price feed. `web/src/lib/borrow.ts` holds that arithmetic and

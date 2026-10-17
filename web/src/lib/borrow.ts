@@ -180,3 +180,125 @@ export function currentIcr(collateral: bigint, price: bigint | null, debt: bigin
   if (price === null || price <= 0n || debt <= 0n) return null;
   return (musdValueOf(collateral, price) * ONE) / debt;
 }
+
+/* -------------------------------------------------------- managing a trove */
+
+/**
+ * What an existing position allows, which is less obvious than it looks.
+ *
+ * Three limits, each discovered by simulating the live contract rather than
+ * read from documentation:
+ *
+ * 1. **Repaying has a floor.** The trove's *net* debt - the debt less the
+ *    200 MUSD gas reserve - must stay at or above `minNetDebt`. Repaying
+ *    past that reverts with "BorrowerOps: Trove's net debt must be greater
+ *    than minimum". So a trove opened at the 1800 minimum can only repay
+ *    whatever interest and fee sit on top of it, which is single-digit MUSD.
+ *    The only way out of a position is to close it.
+ *
+ * 2. **Closing costs the net debt, not the debt.** `closeTrove` needs the
+ *    whole net debt in the wallet and cancels the gas reserve against the
+ *    rest. A wallet that borrowed 1800 and spent it cannot close: it needs
+ *    1800 plus accrued interest, and it has less than 1800. That is not a
+ *    bug, and the number it is short by is the thing to put on screen -
+ *    otherwise the revert reads as the button being broken.
+ *
+ * 3. **Borrowing more is bounded by the ratio, not by the minimum.** The
+ *    chain's own limit is MCR; this page's is SAFE_ICR, so the figure here
+ *    is deliberately smaller than what the contract would accept.
+ *
+ * No allowance is involved anywhere: BorrowerOperations burns MUSD directly,
+ * confirmed by simulating a repayment with an allowance of zero.
+ */
+export interface PositionPlan {
+  /** Debt less the gas reserve: the figure every limit is actually about. */
+  readonly netDebt: bigint;
+  /** The most that may be repaid without going under `minNetDebt`. */
+  readonly repayCeiling: bigint;
+  /** The most that may be repaid now, also accounting for the wallet. */
+  readonly maxRepay: bigint;
+  /** MUSD needed in the wallet to close the position outright. */
+  readonly closeCost: bigint;
+  /** Zero when the position can be closed, otherwise how much is missing. */
+  readonly shortToClose: bigint;
+  readonly canClose: boolean;
+  /** The most that may be borrowed against this collateral, at SAFE_ICR. */
+  readonly maxBorrowMore: bigint;
+}
+
+export interface PositionPlanInput {
+  readonly debt: bigint;
+  readonly collateral: bigint;
+  readonly price: bigint | null;
+  readonly minNetDebt: bigint;
+  readonly musdBalance: bigint;
+}
+
+function min(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
+}
+
+function atLeastZero(value: bigint): bigint {
+  return value > 0n ? value : 0n;
+}
+
+export function positionPlan(input: PositionPlanInput): PositionPlan {
+  const { debt, collateral, price, minNetDebt, musdBalance } = input;
+
+  const netDebt = atLeastZero(debt - GAS_COMPENSATION);
+  const repayCeiling = atLeastZero(netDebt - minNetDebt);
+  const maxRepay = min(repayCeiling, musdBalance);
+  const closeCost = netDebt;
+  const shortToClose = atLeastZero(closeCost - musdBalance);
+
+  /*
+   * Headroom at SAFE_ICR, with the issuance fee taken off the top.
+   *
+   * Borrowing `x` more adds `x` plus a fee on `x` to the debt, so solving for
+   * the debt limit and then subtracting the current debt would over-state the
+   * answer by the fee and hand the user a figure the chain refuses. The
+   * division by (10000 + fee) is that correction.
+   */
+  let maxBorrowMore = 0n;
+  if (price !== null && price > 0n) {
+    const value = (collateral * price) / ONE;
+    const debtLimit = (value * ONE) / SAFE_ICR;
+    const headroom = atLeastZero(debtLimit - debt);
+    maxBorrowMore = (headroom * 10_000n) / (10_000n + FEE_MARGIN_BPS);
+  }
+
+  return {
+    netDebt,
+    repayCeiling,
+    maxRepay,
+    closeCost,
+    shortToClose,
+    canClose: shortToClose === 0n && closeCost > 0n,
+    maxBorrowMore,
+  };
+}
+
+/** The one reason a repayment of `amount` cannot be sent, or null. */
+export function repayBlocker(amount: bigint | null, plan: PositionPlan, musdBalance: bigint): string | null {
+  if (amount === null || amount <= 0n) return "Enter how much MUSD to repay.";
+  if (amount > musdBalance) return "That is more MUSD than this wallet holds.";
+  if (plan.repayCeiling === 0n) {
+    return "This position is already at the protocol's minimum debt, so it cannot be repaid in part. Closing it is the only way to reduce it, and that needs the whole balance of the debt.";
+  }
+  if (amount > plan.repayCeiling) {
+    return "Repaying that much would take the position under the protocol's minimum debt, which reverts. Repay less, or close the position outright.";
+  }
+  return null;
+}
+
+/** The one reason more MUSD cannot be borrowed against this position, or null. */
+export function borrowMoreBlocker(amount: bigint | null, plan: PositionPlan): string | null {
+  if (amount === null || amount <= 0n) return "Enter how much more MUSD to borrow.";
+  if (plan.maxBorrowMore === 0n) {
+    return "This position has no room to borrow more at a safe collateral ratio. Add collateral in Mezo's app first.";
+  }
+  if (amount > plan.maxBorrowMore) {
+    return "That would take the collateral ratio below the 150% this page requires. Borrow less, or add collateral.";
+  }
+  return null;
+}

@@ -883,3 +883,20 @@ a.button .icon {
   border-top: 1px solid var(--color-border);
   font-size: 1rem;
 }
+
+/* A button that has to read as inline text, for "the borrow panel above".
+   A real <button> rather than an <a href="#borrow">, because it scrolls and
+   moves focus rather than navigating - an anchor would put a dead fragment in
+   the address bar and break the back button. */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-button:hover {
+  text-decoration: none;
+}

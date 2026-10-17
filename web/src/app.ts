@@ -23,10 +23,14 @@ import { allowanceFor } from "./allowance.ts";
 import {
   FEE_MARGIN_BPS,
   GAS_COMPENSATION,
+  borrowMoreBlocker,
   currentIcr,
   formatIcr,
+  positionPlan,
+  repayBlocker,
   startingCollateral,
   troveQuote,
+  type PositionPlan,
 } from "./lib/borrow.ts";
 import {
   currentStep,
@@ -117,6 +121,9 @@ const DEFAULT_BORROW = "1800";
 
 type Mode = "buy" | "redeem";
 
+/** What a user is doing to a position they already hold. */
+type TroveMode = "repay" | "borrowMore" | "close";
+
 interface State {
   feed: FeedSnapshot;
   connection: { provider: EIP1193Provider; address: Address; chainId: number; walletName: string } | null;
@@ -147,6 +154,8 @@ interface State {
    * being fixed.
    */
   showSteps: boolean;
+  troveMode: TroveMode;
+  troveAmount: string;
   faucetTokens: readonly FaucetToken[] | null;
   faucetMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
   walletMessage: string | null;
@@ -171,6 +180,8 @@ const state: State = {
   borrowPrefilled: false,
   borrowMessage: null,
   showSteps: false,
+  troveMode: "repay",
+  troveAmount: "",
   faucetTokens: null,
   faucetMessage: null,
   walletMessage: null,
@@ -595,6 +606,13 @@ function goToSection(id: "borrow" | "trade"): void {
   // wherever it was, which is the classic "skip link that does nothing".
   panel.setAttribute("tabindex", "-1");
   panel.focus({ preventScroll: true });
+}
+
+/** A link into the borrow panel, which is where a position is managed. */
+function manageLink(): HTMLElement {
+  const link = el("button", { type: "button", class: "link-button" }, ["the borrow panel above"]);
+  link.addEventListener("click", () => goToSection("borrow"));
+  return link;
 }
 
 /**
@@ -1299,30 +1317,21 @@ function renderBorrow(): void {
     return;
   }
 
-  // An existing position, which is the common case on a second visit. There
-  // is no second openTrove: the call reverts for an address that already has
-  // a trove, so offering the form again would be offering a revert.
+  /*
+   * An existing position, which is the common case on a second visit.
+   *
+   * There is no second openTrove - it reverts for an address that already has
+   * a trove - so this is not that form. It is the management interface:
+   * repay part of the debt, borrow more against the same collateral, or close
+   * the position and take the BTC back.
+   *
+   * Each limit here was simulated against the live contract before it was
+   * written down, because every one of them is a revert the user would
+   * otherwise discover by paying for it. See lib/borrow.ts.
+   */
   const trove = state.trove;
   if (trove && trove.status === TROVE_ACTIVE) {
-    const icr = currentIcr(trove.collateral, market.price, trove.debt);
-    sections.borrow.append(
-      el("div", { class: "stats" }, [
-        stat("Collateral locked", `${formatAmount(trove.collateral, 18, 8)} ${mezoTestnet.nativeCurrency.symbol}`, formatUnits(trove.collateral, 18), "returned when the debt is repaid"),
-        stat("Debt owed", `${formatAmount(trove.debt, MUSD_DECIMALS, 2)} MUSD`, formatUnits(trove.debt, MUSD_DECIMALS), `includes the ${GAS_COMPENSATION / 10n ** 18n} MUSD liquidation reserve`),
-        stat("Collateral ratio", formatIcr(icr), undefined, "liquidatable below 110%"),
-      ]),
-      notice(
-        "ok",
-        "You already have a position in Mezo's borrow market, so the MUSD you need is either in your wallet or in shares. One address can hold one position: opening a second reverts, and this page will not offer it.",
-      ),
-      el("p", { class: "muted small" }, [
-        "To borrow more against the same collateral, repay, or close the position and get the ",
-        mezoTestnet.nativeCurrency.symbol,
-        " back, use Mezo's own app: ",
-        el("a", { href: "https://mezo.org", target: "_blank", rel: "noopener noreferrer" }, ["mezo.org"]),
-        ". This page only ever opens a position; it deliberately has no button that adjusts or closes one, because getting that wrong costs collateral.",
-      ]),
-    );
+    renderTroveManager(trove, market);
     return;
   }
 
@@ -1523,6 +1532,327 @@ function renderBorrow(): void {
   }
 
   renderBorrowQuote();
+}
+
+/**
+ * Repay, borrow more, or close - for a position that already exists.
+ *
+ * One mode at a time, like the trade form, for the same reason: three forms
+ * on screen with three buttons invites clicking the wrong one, and the
+ * consequences here are a locked collateral or a revert that costs gas.
+ */
+function renderTroveManager(trove: TrovePosition, market: BorrowMarket): void {
+  const connection = state.connection;
+  const symbol = mezoTestnet.nativeCurrency.symbol;
+  const musdBalance = state.balances?.musd ?? 0n;
+  const icr = currentIcr(trove.collateral, market.price, trove.debt);
+  const plan = positionPlan({
+    debt: trove.debt,
+    collateral: trove.collateral,
+    price: market.price,
+    minNetDebt: market.minNetDebt,
+    musdBalance,
+  });
+
+  sections.borrow.append(
+    el("div", { class: "stats" }, [
+      stat(
+        `${symbol} locked`,
+        formatAmount(trove.collateral, 18, 8),
+        formatUnits(trove.collateral, 18),
+        "collateral, returned when the position closes",
+      ),
+      stat(
+        "MUSD owed",
+        formatAmount(trove.debt, MUSD_DECIMALS, 2),
+        formatUnits(trove.debt, MUSD_DECIMALS),
+        `${GAS_COMPENSATION / 10n ** 18n} MUSD of it is the liquidation reserve`,
+      ),
+      stat("Collateral ratio", formatIcr(icr), undefined, "liquidatable below 110%"),
+    ]),
+  );
+
+  if (!connection || !onRightChain()) {
+    sections.borrow.append(
+      notice("warning", `Connect on ${mezoTestnet.name} to manage this position.`),
+    );
+    return;
+  }
+
+  /* The modes, and which of them is possible at all.
+     Disabled with a reason rather than hidden: "repay" vanishing from a
+     position that cannot be repaid in part leaves the user looking for it,
+     while a disabled tab with a title says what the protocol will not do. */
+  const modes: readonly { id: TroveMode; label: string; blocked: string | null }[] = [
+    {
+      id: "repay",
+      label: "Repay",
+      blocked:
+        plan.repayCeiling === 0n
+          ? "This position is at the protocol's minimum debt, so it cannot be repaid in part - only closed."
+          : null,
+    },
+    { id: "borrowMore", label: "Borrow more", blocked: plan.maxBorrowMore === 0n ? "No room at a safe collateral ratio." : null },
+    { id: "close", label: "Close", blocked: null },
+  ];
+
+  const group = el("div", { class: "segmented", role: "radiogroup", "aria-label": "Manage this position" });
+  for (const mode of modes) {
+    const button = el("button", {
+      type: "button",
+      role: "radio",
+      "aria-checked": state.troveMode === mode.id ? "true" : "false",
+      class: `segment${state.troveMode === mode.id ? " is-active" : ""}`,
+      disabled: mode.blocked !== null,
+      title: mode.blocked ?? undefined,
+    }, [mode.label]);
+    button.addEventListener("click", () => {
+      state.troveMode = mode.id;
+      state.troveAmount = "";
+      state.borrowMessage = null;
+      renderBorrow();
+    });
+    group.append(button);
+  }
+  sections.borrow.append(group);
+
+  // A mode the protocol has closed off must not stay selected: the form under
+  // it would be one whose every amount is refused.
+  const active = modes.find((mode) => mode.id === state.troveMode);
+  if (active?.blocked) {
+    sections.borrow.append(notice("warning", active.blocked));
+    return;
+  }
+
+  if (state.troveMode === "close") {
+    renderCloseTrove(plan, trove);
+    return;
+  }
+  renderTroveAmountForm(plan, musdBalance);
+}
+
+/** Repay or borrow more: one amount, one limit, one button. */
+function renderTroveAmountForm(plan: PositionPlan, musdBalance: bigint): void {
+  const connection = state.connection;
+  if (!connection) return;
+  const repaying = state.troveMode === "repay";
+  const limit = repaying ? plan.maxRepay : plan.maxBorrowMore;
+
+  const input = el("input", {
+    class: "input mono",
+    id: "trove-amount",
+    type: "text",
+    inputmode: "decimal",
+    autocomplete: "off",
+    spellcheck: false,
+    placeholder: "0.00",
+    value: state.troveAmount,
+  });
+  const maxButton = el("button", { type: "button", class: "button button-ghost small" }, ["Max"]);
+  const quoteBox = el("div", { class: "quote", "aria-live": "polite" });
+  const actionRow = el("div", { class: "action-row" });
+  const messageBox = el("div", { class: "messages" });
+
+  input.addEventListener("input", () => {
+    state.troveAmount = input.value;
+    renderForm();
+  });
+  maxButton.addEventListener("click", () => {
+    state.troveAmount = formatUnits(limit, MUSD_DECIMALS);
+    input.value = state.troveAmount;
+    renderForm();
+  });
+
+  sections.borrow.append(
+    el("div", { class: "field" }, [
+      el("label", { class: "field-label", for: "trove-amount" }, [
+        repaying ? "Repay (MUSD)" : "Borrow more (MUSD)",
+      ]),
+      el("div", { class: "field-row" }, [input, maxButton]),
+      el("p", { class: "muted small" }, [
+        repaying
+          ? /* The ceiling, and why it is usually small. A trove opened at the
+               1800 minimum has only its accrued interest and fee above the
+               floor, so "at most 9.02 MUSD" against a 2009 MUSD debt looks
+               wrong until the sentence explains it. */
+            `You hold ${formatAmount(musdBalance, MUSD_DECIMALS, 4)} MUSD. At most ${formatAmount(plan.maxRepay, MUSD_DECIMALS, 6)} MUSD can be repaid while keeping the position open: the protocol requires the debt, less its ${GAS_COMPENSATION / 10n ** 18n} MUSD liquidation reserve, to stay at or above the ${formatAmount(state.borrowMarket?.minNetDebt ?? 0n, MUSD_DECIMALS, 0)} MUSD minimum. Closing is the only way past that.`
+          : `At most ${formatAmount(plan.maxBorrowMore, MUSD_DECIMALS, 2)} MUSD, which keeps the collateral ratio at the 150% this page requires. The protocol itself would allow more, down to 110%.`,
+      ]),
+    ]),
+    quoteBox,
+    actionRow,
+    messageBox,
+  );
+
+  function renderForm(): void {
+    clear(quoteBox);
+    clear(actionRow);
+    clear(messageBox);
+    if (!connection) return;
+
+    const parsed = parseAmount(state.troveAmount, MUSD_DECIMALS);
+    const amount = parsed.ok ? parsed.value : null;
+    if (!parsed.ok && state.troveAmount.trim() !== "") {
+      quoteBox.append(notice("error", parsed.reason));
+    }
+
+    const blocker = repaying
+      ? repayBlocker(amount, plan, musdBalance)
+      : borrowMoreBlocker(amount, plan);
+
+    const newDebt =
+      amount === null
+        ? plan.netDebt + GAS_COMPENSATION
+        : repaying
+          ? plan.netDebt + GAS_COMPENSATION - amount
+          : plan.netDebt + GAS_COMPENSATION + amount + (amount * FEE_MARGIN_BPS) / 10_000n;
+
+    quoteBox.append(
+      el("dl", { class: "quote-list" }, [
+        el("dt", {}, ["Debt now"]),
+        el("dd", { class: "mono" }, [`${formatAmount(plan.netDebt + GAS_COMPENSATION, MUSD_DECIMALS, 2)} MUSD`]),
+        el("dt", {}, [repaying ? "Debt after repaying" : "Debt after borrowing"]),
+        el("dd", { class: "mono" }, [`\u2248 ${formatAmount(newDebt, MUSD_DECIMALS, 2)} MUSD`]),
+        el("dt", {}, ["Ratio after"]),
+        el("dd", { class: "mono" }, [
+          formatIcr(currentIcr(state.trove?.collateral ?? 0n, state.borrowMarket?.price ?? null, newDebt)),
+        ]),
+      ]),
+    );
+    if (blocker && state.troveAmount.trim() !== "") quoteBox.append(notice("warning", blocker));
+
+    const primary = actionButton({
+      label: repaying
+        ? `Repay ${formatAmount(amount ?? 0n, MUSD_DECIMALS, 2)} MUSD`
+        : `Borrow ${formatAmount(amount ?? 0n, MUSD_DECIMALS, 2)} MUSD more`,
+      pendingLabel: repaying ? "Repaying\u2026" : "Borrowing\u2026",
+      onClick: async () => {
+        if (amount === null) return;
+        state.borrowMessage = null;
+        try {
+          const wallet = walletClientFor(connection.provider, connection.address);
+          const hash = await writeContract(wallet, {
+            address: CONFIG.borrowerOperations as Address,
+            abi: BORROWER_OPERATIONS_ABI,
+            // No approval step for repayMUSD: BorrowerOperations burns the
+            // MUSD directly, confirmed by simulating a repayment against the
+            // live contract with an allowance of zero.
+            functionName: repaying ? "repayMUSD" : "withdrawMUSD",
+            args: [amount, ZERO_ADDRESS, ZERO_ADDRESS],
+          });
+          state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to update\u2026" };
+          renderForm();
+          await sendAndWait(hash);
+          await refreshChain();
+          state.troveAmount = "";
+          state.borrowMessage = {
+            kind: "ok",
+            text: repaying ? "Repaid. The debt above is the new one." : "Borrowed. The MUSD is in your wallet.",
+          };
+        } catch (error) {
+          const explained = describeError(error);
+          state.borrowMessage = { kind: "error", text: explained.message, name: explained.name };
+        } finally {
+          renderAll();
+        }
+      },
+    });
+    primary.setBlocked(blocker);
+    actionRow.append(primary.element);
+    if (state.borrowMessage) {
+      messageBox.append(notice(state.borrowMessage.kind, state.borrowMessage.text, state.borrowMessage.name));
+    }
+  }
+
+  renderForm();
+}
+
+/**
+ * Closing: one button, and the number that decides whether it can be pressed.
+ *
+ * The failure here is specific and worth naming rather than letting the chain
+ * name it. `closeTrove` needs the whole net debt in the wallet, so a tester
+ * who borrowed 1800 and spent it on shares cannot close - they need 1800 plus
+ * the interest, and they hold less than 1800. "Caller doesnt have enough mUSD
+ * to make repayment" is the revert, and it reads as a bug unless the page has
+ * already said how short they are and where the rest comes from.
+ */
+function renderCloseTrove(plan: PositionPlan, trove: TrovePosition): void {
+  const connection = state.connection;
+  if (!connection) return;
+  const symbol = mezoTestnet.nativeCurrency.symbol;
+
+  sections.borrow.append(
+    el("div", { class: "quote" }, [
+      el("dl", { class: "quote-list" }, [
+        el("dt", {}, ["MUSD needed"]),
+        el("dd", { class: "mono" }, [`${formatAmount(plan.closeCost, MUSD_DECIMALS, 6)} MUSD`]),
+        el("dt", {}, ["You hold"]),
+        el("dd", { class: "mono" }, [`${formatAmount(state.balances?.musd ?? 0n, MUSD_DECIMALS, 6)} MUSD`]),
+        el("dt", {}, [`${symbol} returned`]),
+        el("dd", { class: "mono" }, [formatAmount(trove.collateral, 18, 8)]),
+      ]),
+      el("p", { class: "muted small" }, [
+        `Closing repays the debt in full and returns all ${formatAmount(trove.collateral, 18, 8)} ${symbol}. The ${GAS_COMPENSATION / 10n ** 18n} MUSD liquidation reserve is cancelled against the debt rather than paid, which is why the figure needed is ${formatAmount(GAS_COMPENSATION, MUSD_DECIMALS, 0)} MUSD less than the debt shown above.`,
+      ]),
+    ]),
+  );
+
+  if (!plan.canClose) {
+    sections.borrow.append(
+      notice(
+        "warning",
+        `You are ${formatAmount(plan.shortToClose, MUSD_DECIMALS, 6)} MUSD short of closing this position. That gap is the interest and issuance fee the position has already cost. Redeem shares back to MUSD, or acquire the difference, and this becomes available - the page re-checks every five seconds.`,
+      ),
+    );
+  }
+
+  const primary = actionButton({
+    label: `Repay ${formatAmount(plan.closeCost, MUSD_DECIMALS, 2)} MUSD and close`,
+    pendingLabel: "Closing the position\u2026",
+    onClick: async () => {
+      state.borrowMessage = null;
+      try {
+        const wallet = walletClientFor(connection.provider, connection.address);
+        const hash = await writeContract(wallet, {
+          address: CONFIG.borrowerOperations as Address,
+          abi: BORROWER_OPERATIONS_ABI,
+          functionName: "closeTrove",
+          args: [],
+        });
+        state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to close\u2026" };
+        renderAll();
+        await sendAndWait(hash);
+        await refreshChain();
+        state.borrowMessage = {
+          kind: "ok",
+          text: `Closed. The ${symbol} is back in your wallet and the debt is gone.`,
+        };
+      } catch (error) {
+        const explained = describeError(error);
+        state.borrowMessage = { kind: "error", text: explained.message, name: explained.name };
+      } finally {
+        renderAll();
+      }
+    },
+  });
+  primary.setBlocked(
+    plan.canClose ? null : `You need ${formatAmount(plan.shortToClose, MUSD_DECIMALS, 4)} MUSD more to close this.`,
+  );
+
+  sections.borrow.append(
+    el("div", { class: "action-row" }, [primary.element]),
+    el("p", { class: "muted small" }, [
+      "Closing is final for this position, and the next one is a new openTrove at whatever the collateral ratio and minimum are then. Nothing here is irreversible beyond that: the ",
+      symbol,
+      " comes back in the same transaction.",
+    ]),
+  );
+  if (state.borrowMessage) {
+    sections.borrow.append(
+      notice(state.borrowMessage.kind, state.borrowMessage.text, state.borrowMessage.name),
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ faucet */
@@ -1769,9 +2099,11 @@ function renderPosition(): void {
         ),
       ]),
       el("p", { class: "muted small" }, [
-        "This is a position in Mezo's own borrow market, not in ours. Repaying it or closing it is done in ",
-        el("a", { href: "https://mezo.org", target: "_blank", rel: "noopener noreferrer" }, ["Mezo's app"]),
-        "; this page deliberately has no button that adjusts or closes a position, because getting that wrong costs collateral.",
+        "This is a position in Mezo's own borrow market, not in ours. Repay it, borrow more against the same collateral, or close it and take the ",
+        symbol,
+        " back, in ",
+        manageLink(),
+        ".",
       ]),
     );
   }

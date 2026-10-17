@@ -203,7 +203,47 @@ debt understates the collateral needed and the cost of being wrong in that
 direction is a liquidation.
 
 One address holds at most one trove: a second `openTrove` reverts. The page
-reads `getTroveStatus` and shows the existing position instead of a form.
+reads `getTroveStatus` and shows the management interface instead of a form.
+
+### Managing a position: three limits, each one a revert if you miss it
+
+```
+repayMUSD(uint256,address,address)     0xdc283bb3
+withdrawMUSD(uint256,address,address)  0xaf8b4fd0
+closeTrove()                           0x0e704d50
+addColl(address,address)               0x68647db1  (payable, not used)
+withdrawColl(uint256,address,address)  0x5530273c  (not used)
+adjustTrove(uint256,uint256,bool,...)  0x45c842e6  (not used)
+```
+
+Simulated from `0x9c77…`, which held a real trove of 2009.017413 MUSD of debt
+against 0.01 BTC with 1798.873292 MUSD in the wallet:
+
+| Call | Result |
+|---|---|
+| `repayMUSD(5e18)` | succeeds |
+| `repayMUSD(9e18)` | succeeds |
+| `repayMUSD(20e18)` | **reverts** — `BorrowerOps: Trove's net debt must be greater than minimum` |
+| `closeTrove()` | **reverts** — `BorrowerOps: Caller doesnt have enough mUSD to make repayment` |
+| `withdrawMUSD(1e21)` | succeeds |
+| `withdrawMUSD(1e23)` | succeeds |
+| `withdrawMUSD(2e23)` | **reverts** — `BorrowerOps: An operation that would result in ICR < MCR is not permitted` |
+
+1. **Repaying has a floor.** Net debt — the debt less the 200 MUSD gas
+   reserve — must stay at or above `minNetDebt`. Here that left a ceiling of
+   9.017413 MUSD against a 2009 MUSD debt, which is why the front end spells
+   the reason out: a trove opened at the 1800 minimum can only repay the
+   interest and fee sitting on top of it.
+2. **Closing costs the net debt, not the debt.** 1809.017413 MUSD was needed
+   and 1798.873292 was held, so this position **cannot be closed** — short by
+   10.144121, which is exactly what it has already paid in interest and
+   issuance fee. A tester who borrows 1800 and spends it is in this state, and
+   the page says how short they are rather than letting the revert say it.
+3. **No allowance anywhere.** `repayMUSD` simulates successfully with an
+   allowance of zero: `BorrowerOperations` burns MUSD directly rather than
+   pulling it. There is no approve step before repaying.
+
+`web/test/borrow.test.ts` pins all three boundaries to these readings.
 
 ## Ours
 

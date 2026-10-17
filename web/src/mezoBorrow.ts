@@ -45,6 +45,42 @@ export const BORROWER_OPERATIONS_ABI = [
     ],
     outputs: [],
   },
+  /*
+   * Managing an existing position. All three selectors were matched against
+   * the implementation's bytecode and then simulated against the live
+   * contract from an address holding a real trove, which is also where the
+   * limits in lib/borrow.ts come from:
+   *
+   *   repayMUSD    0xdc283bb3   reverts under minNetDebt, needs NO allowance
+   *   closeTrove   0x0e704d50   needs the whole net debt in the wallet
+   *   withdrawMUSD 0xaf8b4fd0   reverts when it would push ICR under MCR
+   *
+   * No allowance anywhere: BorrowerOperations burns MUSD directly, confirmed
+   * by simulating a repayment with an allowance of zero.
+   */
+  {
+    type: "function",
+    name: "repayMUSD",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "upperHint", type: "address" },
+      { name: "lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "withdrawMUSD",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "upperHint", type: "address" },
+      { name: "lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  { type: "function", name: "closeTrove", stateMutability: "nonpayable", inputs: [], outputs: [] },
   { type: "function", name: "minNetDebt", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "MCR", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "musd", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
