@@ -128,7 +128,11 @@ export function mount(): void {
     el("header", { class: "masthead" }, [
       el("div", { class: "masthead-title" }, [
         el("h1", {}, ["LeekStonks"]),
-        el("p", { class: "tagline" }, ["Lending and ETFs protocol"]),
+        /* The product is LeekStonks; LeekDefi is the host it shares with
+           Leeknding, which is written and tested but not deployed. Naming it
+           here as coming rather than as a tab is the honest version: a tab
+           implies something to click. */
+        el("p", { class: "tagline" }, ["Parody index tokens, settled in MUSD \u00b7 part of LeekDefi"]),
         el("p", { class: "muted small" }, [
           "Parody index tokens, settled in MUSD on Mezo testnet. Not securities, not backed by anything.",
         ]),
@@ -146,7 +150,7 @@ export function mount(): void {
       el("p", {}, [
         // Named rather than linked: the lending market is not deployed, and a
         // navigation item that leads nowhere is worse than a sentence saying so.
-        "The lending half of the protocol is not built yet. Nothing on this page borrows, lends or charges interest.",
+        "Leeknding, the lending half, is built and tested but not deployed: multichain Leeknding is coming. Nothing on this page borrows, lends or charges interest.",
       ]),
       el("p", {}, [
         "Gas on Mezo is paid in ",
