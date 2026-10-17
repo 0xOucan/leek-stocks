@@ -147,6 +147,23 @@ at 8 decimals); its vault prices a share at `200e18`; `feeBps` 50,
 `reserveShareBps` 5000, `coverageBps` 10000, reserves 0 because nobody has
 bought yet. `musd()` on both vaults returns `0xf9BBcC…`.
 
+### Keys, and what each one can do
+
+Set on 2026-10-17, verified by reading `hasRole` on both oracles:
+
+| Keystore | Address | Holds | Can therefore |
+|---|---|---|---|
+| `monad-deployer` | `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` | `DEFAULT_ADMIN_ROLE`, guardian, treasurer | pause, move fees, reconfigure, grant roles — **not** publish |
+| `leek-publisher` | `0x843914e5BBdbE92296F2c3D895D424301b3517fC` | `PUBLISHER_ROLE` only | push prices, inside an immutable 20% per-round bound |
+
+The deployer's publisher rights were **revoked** on both oracles, so the only
+key that can move a price is the one with nothing else on it — which is the
+key that has to live on a server. The deployer keeps admin, so it can grant
+them back if the publisher key is ever lost.
+
+`scripts/sweep-publisher.sh` sends all but a gas float back to the deployer,
+because a hot key should hold only what it burns.
+
 ### Why four of them are "not indexed" rather than verified
 
 Mezo's testnet explorer **never indexed the contracts the factory deployed**.
