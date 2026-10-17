@@ -75,17 +75,34 @@ install -m 600 /dev/null "$ENV_FILE"
 
 unset KEY
 
-# Proof it landed, without printing it: the address the file's key derives to,
-# which must be the publisher. A file holding the wrong key would otherwise
-# only show up as a failed publish an hour later.
-DERIVED=$(cast wallet address --private-key "$(grep '^PUBLISHER_PRIVATE_KEY=' "$ENV_FILE" | cut -d= -f2)")
-if [[ "${DERIVED,,}" != "${ADDR,,}" ]]; then
-  shred -u "$ENV_FILE"
-  echo "STOP: the key in the file derives to $DERIVED, not $ADDR. File removed." >&2
-  exit 1
+# Proof it landed, without the key ever becoming an argument.
+#
+# The obvious check - `cast wallet address --private-key $(grep ...)` - puts
+# the key in a command line, which is visible in `ps` and is the single thing
+# this script exists to avoid. `--private-key` has no environment variable
+# either. So the file is read by a short node program that derives the address
+# in process and prints only that: the key stays in that process's memory and
+# reaches no argv, no log and no terminal.
+#
+# Skipped, with a note, when the feed's dependencies are not installed yet;
+# the first publish would catch a wrong key anyway, just an hour later.
+if [[ -d feed/node_modules/viem ]]; then
+  DERIVED=$(cd feed && node --experimental-strip-types --disable-warning=ExperimentalWarning -e '
+    const fs = require("node:fs");
+    const line = fs.readFileSync(".env", "utf8").split("\n").find((l) => l.startsWith("PUBLISHER_PRIVATE_KEY="));
+    const key = line.slice("PUBLISHER_PRIVATE_KEY=".length).trim();
+    import("viem/accounts").then(({ privateKeyToAccount }) => console.log(privateKeyToAccount(key).address));
+  ')
+  if [[ "${DERIVED,,}" != "${ADDR,,}" ]]; then
+    shred -u "$ENV_FILE"
+    echo "STOP: the key in the file derives to $DERIVED, not $ADDR. File removed." >&2
+    exit 1
+  fi
+  echo "wrote $ENV_FILE (mode $(stat -c '%a' "$ENV_FILE"), key derives to $DERIVED)"
+else
+  echo "wrote $ENV_FILE (mode $(stat -c '%a' "$ENV_FILE"))"
+  echo "   not derived-checked: run 'cd feed && npm ci' first if you want that check"
 fi
-
-echo "wrote $ENV_FILE (mode $(stat -c '%a' "$ENV_FILE"), key derives to $DERIVED)"
 cat <<NEXT
 
 == run it
