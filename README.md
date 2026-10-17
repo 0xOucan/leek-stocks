@@ -148,7 +148,7 @@ of them puts a key or a password on a command line.
 
 ## What Mezo does differently, and what it cost to find out
 
-Three things break standard EVM tooling here. All three are in
+Four things break standard EVM tooling here. All four are in
 [DEPLOYMENT.md](DEPLOYMENT.md) with the exact errors; the summary:
 
 1. **Sequence, not nonce.** `mezod` forks Evmos, so Cosmos checks the account
@@ -165,6 +165,17 @@ Three things break standard EVM tooling here. All three are in
    answers `is_contract: false` for them while `eth_getCode` returns their
    code, so Blockscout verification cannot match them. Fix:
    `verify-bytecode.sh`.
+4. **`eth_estimateGas` returns a limit the chain then refuses.** Mezo enforces
+   the EIP-7623 calldata floor but does not apply it when estimating, so a
+   transaction built from the node's own estimate is rejected: `gas limit
+   below EIP-7623 floor: 21240 (gas limit) < 21600 (floor data gas)`. The
+   floor counts zero and non-zero calldata bytes differently, so whether a
+   call fails depends on the *digits of the number being sent* - one oracle
+   published at 115.20 while the other was refused at 128.00 in the same
+   cycle. An intermittent fee error reads like a flaky RPC and invites a retry
+   loop, which would never have worked. Fix: compute the floor
+   (`eip7623FloorGas` in the feed) and send `max(estimate, floor)` with a
+   margin.
 
 None of these is a fault in this repository, and none is in Mezo's
 documentation.

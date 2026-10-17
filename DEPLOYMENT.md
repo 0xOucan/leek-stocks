@@ -145,6 +145,31 @@ anything that exists. **Record addresses only from a log that completed.** An
 orphaned contract from a failed attempt is harmless — gas on Mezo is measured
 in hundreds of wei — but a recorded address that holds no contract is not.
 
+**And the gas estimate is not a usable gas limit.** Mezo enforces the EIP-7623
+calldata floor, but `eth_estimateGas` does not apply that floor, so a
+transaction built from the node's own estimate is refused by the same node:
+
+```
+failed to verify the fees: gas limit below EIP-7623 floor:
+  21240 (gas limit) < 21600 (floor data gas): out of gas
+```
+
+The floor is `21000 + 10 * tokens`, where a zero calldata byte counts as one
+token and a non-zero byte as four. So the floor depends on how many zero bytes
+the ABI-encoded arguments contain, and whether a call is refused depends on
+**the digits of the number being sent**. This surfaced in the feed: in one
+cycle the AMEZON oracle published at 115.20 while GOLOGGLE was refused at
+128.00, same contract, same ABI, same key. That is the dangerous shape of this
+bug — an intermittent fee error looks like a flaky RPC and invites a retry
+loop, which can never succeed, rather than a gas limit.
+
+The fix is to compute the floor and send `max(estimate, floor)` with a margin.
+`eip7623FloorGas()` in `feed/src/service.ts` does this, and a test pins it
+against the exact 21600 that Mezo reported. Foundry deployments have not hit
+it, because contract-creation calldata is large enough that the estimate
+already exceeds the floor; it bites small calls with mostly-zero arguments,
+which is exactly what an oracle publish is.
+
 ## 2. Cloudflare
 
 Per `docs/cloudflare.md`, the origin is one VPS IPv4 and the zone is

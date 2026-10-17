@@ -22,7 +22,15 @@
  */
 
 import { createServer } from "node:http";
-import { createPublicClient, createWalletClient, defineChain, http, type Address } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  defineChain,
+  encodeFunctionData,
+  http,
+  type Address,
+  type Hex,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { INDICES } from "./indices.ts";
 import {
@@ -144,6 +152,42 @@ export interface Config {
   readonly chainId: number;
   /** Use the deterministic series instead of the source. For a filmed demo. */
   readonly synthetic: boolean;
+}
+
+/**
+ * The EIP-7623 calldata floor, in gas, for a transaction carrying `data`.
+ *
+ * Mezo enforces this floor and its `eth_estimateGas` does not account for it,
+ * so the node rejects a transaction built from the node's own estimate:
+ *
+ *   failed to verify the fees: gas limit below EIP-7623 floor:
+ *     21240 (gas limit) < 21600 (floor data gas): out of gas
+ *
+ * The floor is 21000 plus 10 gas per calldata token, where a zero byte is one
+ * token and a non-zero byte is four. That makes the floor depend on how many
+ * zero bytes the ABI-encoded price happens to contain - so the failure is
+ * intermittent, decided by the digits of the number being published. One
+ * oracle published at 115.20 while the other was rejected at 128.00 in the
+ * same cycle, which is how this was found; a price that fails today succeeds
+ * at a different value tomorrow. Worth stating plainly, because an
+ * intermittent fee error reads like a flaky RPC and invites a retry loop
+ * rather than a gas limit.
+ *
+ * Computed rather than hard-coded: the oracle's calldata is fixed in shape but
+ * not in content, and a hard-coded 21600 would be wrong the moment the ABI
+ * changes.
+ */
+export function eip7623FloorGas(data: Hex): bigint {
+  const bytes = data.slice(2);
+  let tokens = 0n;
+  for (let i = 0; i < bytes.length; i += 2) {
+    tokens += bytes.slice(i, i + 2) === "00" ? 1n : 4n;
+  }
+  return 21000n + 10n * tokens;
+}
+
+function max(a: bigint, b: bigint): bigint {
+  return a > b ? a : b;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
@@ -274,11 +318,29 @@ export class FeedService {
         state.lastDecision = `${decision.publish ? "publish" : "hold"}: ${decision.reason} (${origin})`;
 
         if (decision.publish) {
+          /* An explicit gas limit, because Mezo rejects its own estimate.
+             See eip7623FloorGas() for why. */
+          const data = encodeFunctionData({
+            abi: ORACLE_ABI,
+            functionName: "publish",
+            args: [decision.answer],
+          });
+          const estimate = await publicClient.estimateContractGas({
+            address: oracle,
+            abi: ORACLE_ABI,
+            functionName: "publish",
+            args: [decision.answer],
+            account,
+          });
+          const floor = eip7623FloorGas(data);
+          const gas = (max(estimate, floor) * 12n) / 10n;
+
           const hash = await walletClient.writeContract({
             address: oracle,
             abi: ORACLE_ABI,
             functionName: "publish",
             args: [decision.answer],
+            gas,
           });
           await publicClient.waitForTransactionReceipt({ hash });
 

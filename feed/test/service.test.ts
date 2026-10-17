@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { chainFor, configFromEnv, FeedService, mezoTestnet } from "../src/service.ts";
+import { encodeFunctionData } from "viem";
+import { chainFor, configFromEnv, eip7623FloorGas, FeedService, mezoTestnet } from "../src/service.ts";
 
 /**
  * This file exists because the pure-function tests do not import the service,
@@ -83,4 +84,31 @@ test("the publishing chain is configurable, and Mezo testnet is the default", ()
   // A rehearsal chain is named for what it is rather than dressed as Mezo.
   assert.equal(chainFor(31_337, "http://x").id, 31_337);
   assert.match(chainFor(31_337, "http://x").name, /31337/);
+});
+
+test("the EIP-7623 floor is computed, and matches the value Mezo rejected", () => {
+  // The exact calldata from the rejected GOLOGGLE publish: publish(12800000000).
+  // Mezo said "21240 (gas limit) < 21600 (floor data gas)", so the floor for
+  // this calldata is 21600 and the node's own estimate was below it.
+  const data = encodeFunctionData({
+    abi: [
+      {
+        type: "function",
+        name: "publish",
+        stateMutability: "nonpayable",
+        inputs: [{ name: "answer", type: "int256" }],
+        outputs: [],
+      },
+    ],
+    functionName: "publish",
+    args: [12800000000n],
+  });
+  assert.equal(eip7623FloorGas(data), 21600n);
+
+  // An empty calldata transaction is a plain transfer: the floor is the base
+  // cost and nothing more.
+  assert.equal(eip7623FloorGas("0x"), 21000n);
+
+  // Four non-zero bytes are four tokens each: 21000 + 10 * 16.
+  assert.equal(eip7623FloorGas("0xdeadbeef"), 21160n);
 });
