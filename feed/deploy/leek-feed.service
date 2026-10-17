@@ -1,0 +1,39 @@
+# systemd unit for the price feed. Install to /etc/systemd/system/.
+#
+# The hardening below is not decoration: this process holds a signing key, so
+# it gets no new privileges, no write access outside its own state, and no view
+# of the rest of the filesystem. If it is ever compromised, the blast radius
+# should be the key it already has rather than the host.
+[Unit]
+Description=leek-stocks price feed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=leekfeed
+Group=leekfeed
+WorkingDirectory=/opt/leek-stocks/feed
+# Mode 0600, owned by root, readable by this unit only. Holds the key.
+EnvironmentFile=/etc/leek-stocks/feed.env
+ExecStart=/usr/bin/node --experimental-strip-types src/main.ts
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
