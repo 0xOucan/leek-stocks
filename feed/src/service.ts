@@ -150,7 +150,15 @@ export class FeedService {
   private timer: NodeJS.Timeout | null = null;
   private server: ReturnType<typeof createServer> | null = null;
 
-  constructor(private readonly config: Config) {
+  /* Declared rather than written as a constructor parameter property: Node
+     runs these files by stripping types, and a parameter property is a
+     TypeScript construct that emits code, which strip-only mode refuses. The
+     service would have failed at start-up while the pure-function tests,
+     which never import this file, stayed green. */
+  private readonly config: Config;
+
+  constructor(config: Config) {
+    this.config = config;
     for (const index of INDICES) {
       assertDefinition(index);
       this.status.set(index.symbol, {
@@ -177,6 +185,11 @@ export class FeedService {
    *  a feed that is otherwise healthy. */
   async tick(): Promise<void> {
     this.step += 1;
+    /* One request per tick for every constituent of every index, rather than
+     * one per index: the source is rate-limited, the indices overlap, and a
+     * 429 is the likeliest way this service fails. Fetched once here and
+     * shared, so adding an index costs no extra request. */
+    const shared = await this.sharedPrices();
     const account = privateKeyToAccount(this.config.publisherKey);
     const transport = http(this.config.rpcUrl);
     const publicClient = createPublicClient({ chain: mezoTestnet, transport });
@@ -188,7 +201,7 @@ export class FeedService {
       const state = this.status.get(index.symbol)!;
       state.lastAttemptAt = Math.floor(Date.now() / 1000);
       try {
-        const { value, origin } = await this.valueFor(index);
+        const { value, origin } = this.valueFor(index, shared);
         state.value = value;
         state.origin = origin;
 
@@ -242,17 +255,33 @@ export class FeedService {
     }
   }
 
-  private async valueFor(index: IndexDefinition): Promise<{ value: number; origin: SourceResult["origin"] }> {
-    if (this.config.synthetic) {
-      return { value: syntheticValue(index, this.step), origin: "synthetic" };
-    }
+  /** Every constituent of every index, in one request, or null if it failed. */
+  private async sharedPrices(): Promise<Readonly<Record<string, number>> | null> {
+    if (this.config.synthetic) return null;
+    const ids = [...new Set(INDICES.flatMap((i) => i.constituents.map((c) => c.id)))].sort();
     try {
-      const prices = await fetchPrices(index.constituents.map((c) => c.id));
-      return { value: indexValue(index, prices), origin: "source" };
+      return await fetchPrices(ids);
     } catch (error) {
       // Labelled, not hidden: a demo that stalls because an API is down is
       // worse than a demo that says which series it is showing.
-      console.warn(`[${index.symbol}] source failed, using the deterministic series: ${String(error)}`);
+      console.warn(`source failed, using the deterministic series: ${String(error)}`);
+      return null;
+    }
+  }
+
+  private valueFor(
+    index: IndexDefinition,
+    shared: Readonly<Record<string, number>> | null,
+  ): { value: number; origin: SourceResult["origin"] } {
+    if (shared === null) {
+      return { value: syntheticValue(index, this.step), origin: "synthetic" };
+    }
+    try {
+      return { value: indexValue(index, shared), origin: "source" };
+    } catch (error) {
+      // One index can be unpublishable while the others are fine: a
+      // constituent the source dropped must not take the whole feed down.
+      console.warn(`[${index.symbol}] ${String(error)}; using the deterministic series`);
       return { value: syntheticValue(index, this.step), origin: "synthetic" };
     }
   }
