@@ -35,6 +35,10 @@ contract IssuanceVaultTest is Test {
     uint8 constant FEED_DECIMALS = 8;
     uint32 constant STALENESS = 1 hours;
     uint16 constant FEE_BPS = 50; // 0.5%
+    /* Half of every fee stays in reserves: the funded backstop (H-1a). 50% in
+       tests so both halves of the split are non-zero and a rounding error in
+       either direction shows up. */
+    uint16 constant RESERVE_SHARE_BPS = 5000;
     uint256 constant CAP = 1_000_000e18;
     int256 constant PRICE = 200e8; // 200 MUSD per share
 
@@ -47,7 +51,7 @@ contract IssuanceVaultTest is Test {
 
         factory = new ETFFactory(IERC20(address(musd)), admin);
         vm.prank(admin);
-        factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, CAP, guardian, treasury);
+        factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, RESERVE_SHARE_BPS, CAP, guardian, treasury);
         (address shareAddress, address vaultAddress) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         share = ETFShare(shareAddress);
         vault = IssuanceVault(vaultAddress);
@@ -99,13 +103,13 @@ contract IssuanceVaultTest is Test {
 
         vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(ETFFactory.AlreadyRegistered.selector, "GOLOGGLE"));
-        factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, CAP, guardian, treasury);
+        factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, RESERVE_SHARE_BPS, CAP, guardian, treasury);
     }
 
     function test_onlyAdminRegisters() public {
         vm.prank(alice);
         vm.expectRevert();
-        factory.registerIndex("AMEZON", oracle, STALENESS, FEE_BPS, CAP, guardian, treasury);
+        factory.registerIndex("AMEZON", oracle, STALENESS, FEE_BPS, RESERVE_SHARE_BPS, CAP, guardian, treasury);
     }
 
     /* ------------------------------------------------------------- pricing */
@@ -147,9 +151,10 @@ contract IssuanceVaultTest is Test {
 
         assertEq(got, expectedShares);
         assertEq(share.balanceOf(alice), expectedShares);
-        assertEq(vault.feesAccrued(), expectedFee);
-        // Reserves exclude fees: a shareholder's claim is never the fee pot.
-        assertEq(vault.reserves(), spend - expectedFee);
+        // Half the fee is the treasury's and half stayed in reserves, so the
+        // backstop grows on every trade without anyone choosing to be generous.
+        assertEq(vault.feesAccrued(), expectedFee / 2);
+        assertEq(vault.reserves(), spend - expectedFee / 2);
         assertEq(musd.balanceOf(address(vault)), spend);
     }
 
@@ -240,9 +245,12 @@ contract IssuanceVaultTest is Test {
     function test_liabilitiesAndReservesAreVisible() public {
         vm.prank(alice);
         vault.buy(1000e18, 0);
-        // At the purchase price, liabilities are reserves plus the fee taken.
+        // The reserve share is what makes a fresh buy over-covered rather than
+        // exactly covered: liabilities are the net spend, reserves are that
+        // plus the half of the fee that stayed behind.
         assertEq(vault.liabilities(), 995e18);
-        assertEq(vault.reserves(), 995e18);
+        assertEq(vault.reserves(), 997.5e18);
+        assertGt(vault.coverageBps(), 10_000, "a buy must not leave coverage short");
 
         vm.prank(publisher);
         oracle.publish(240e8);
@@ -269,8 +277,9 @@ contract IssuanceVaultTest is Test {
         vault.withdrawFees(treasury, fees);
         assertEq(musd.balanceOf(treasury), fees);
         assertEq(vault.feesAccrued(), 0);
-        // Shareholder reserves untouched by the withdrawal.
-        assertEq(vault.reserves(), 995e18);
+        // Shareholder reserves untouched by the withdrawal: the fee pot and
+        // the reserves are two pots inside one balance.
+        assertEq(vault.reserves(), 1000e18 - fees);
     }
 
     function test_feeCeilingIsEnforced() public {

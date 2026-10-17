@@ -58,6 +58,10 @@ contract DeployMezoTestnet is Script {
     /* --------------------------------------------------------- vault parameters */
 
     uint16 constant FEE_BPS = 50; // 0.5%, against MAX_FEE_BPS of 500
+    /* Half of every fee stays in reserves instead of reaching the treasury.
+       The backstop that mitigates H-1 has to be funded by something other than
+       goodwill, because fund() pays its caller nothing (H-1a). */
+    uint16 constant RESERVE_SHARE_BPS = 5000;
     uint256 constant MAX_SHARES = 1_000_000e18; // finding H-1's only bound on exposure
 
     /* ------------------------------------------------------------- the indices */
@@ -122,8 +126,12 @@ contract DeployMezoTestnet is Script {
         // instead of silently reverting.
         require(admin == deployer, "ADMIN is not the sender: the admin must call registerIndex/deployETF itself");
 
-        factory.registerIndex(GOLOGGLE_SYMBOL, gologgleOracle, MAX_STALENESS, FEE_BPS, MAX_SHARES, guardian, treasurer);
-        factory.registerIndex(AMEZON_SYMBOL, amezonOracle, MAX_STALENESS, FEE_BPS, MAX_SHARES, guardian, treasurer);
+        factory.registerIndex(
+            GOLOGGLE_SYMBOL, gologgleOracle, MAX_STALENESS, FEE_BPS, RESERVE_SHARE_BPS, MAX_SHARES, guardian, treasurer
+        );
+        factory.registerIndex(
+            AMEZON_SYMBOL, amezonOracle, MAX_STALENESS, FEE_BPS, RESERVE_SHARE_BPS, MAX_SHARES, guardian, treasurer
+        );
 
         (address gologgleShare, address gologgleVault) = factory.deployETF(GOLOGGLE_NAME, GOLOGGLE_SYMBOL);
         (address amezonShare, address amezonVault) = factory.deployETF(AMEZON_NAME, AMEZON_SYMBOL);

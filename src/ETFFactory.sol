@@ -34,6 +34,8 @@ contract ETFFactory is AccessControl {
         AggregatorV3Interface oracle;
         uint32 maxStaleness;
         uint16 feeBps;
+        /// @dev Share of each fee that stays in reserves; the funded backstop.
+        uint16 reserveShareBps;
         uint256 maxShares;
         /// @dev Pause authority on the deployed vault. Should be a multisig.
         address guardian;
@@ -59,6 +61,7 @@ contract ETFFactory is AccessControl {
         address indexed oracle,
         uint32 maxStaleness,
         uint16 feeBps,
+        uint16 reserveShareBps,
         uint256 maxShares,
         address guardian,
         address treasurer
@@ -90,6 +93,7 @@ contract ETFFactory is AccessControl {
         AggregatorV3Interface oracle,
         uint32 maxStaleness,
         uint16 feeBps,
+        uint16 reserveShareBps,
         uint256 maxShares,
         address guardian,
         address treasurer
@@ -109,12 +113,15 @@ contract ETFFactory is AccessControl {
             oracle: oracle,
             maxStaleness: maxStaleness,
             feeBps: feeBps,
+            reserveShareBps: reserveShareBps,
             maxShares: maxShares,
             guardian: guardian,
             treasurer: treasurer,
             registered: true
         });
-        emit IndexRegistered(symbol, address(oracle), maxStaleness, feeBps, maxShares, guardian, treasurer);
+        emit IndexRegistered(
+            symbol, address(oracle), maxStaleness, feeBps, reserveShareBps, maxShares, guardian, treasurer
+        );
     }
 
     /**
@@ -139,6 +146,7 @@ contract ETFFactory is AccessControl {
             config.oracle,
             config.maxStaleness,
             config.feeBps,
+            config.reserveShareBps,
             config.maxShares,
             address(this), // admin for one call: setShare, then handed over
             config.guardian,

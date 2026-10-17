@@ -140,7 +140,7 @@ contract IssuanceVaultInvariantsTest is Test {
 
         factory = new ETFFactory(IERC20(address(musd)), admin);
         vm.prank(admin);
-        factory.registerIndex("GOLOGGLE", oracle, 1 hours, 50, 1_000_000e18, guardian, treasurer);
+        factory.registerIndex("GOLOGGLE", oracle, 1 hours, 50, 5000, 1_000_000e18, guardian, treasurer);
         (address shareAddress, address vaultAddress) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         share = ETFShare(shareAddress);
         vault = IssuanceVault(vaultAddress);
