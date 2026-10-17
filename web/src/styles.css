@@ -858,3 +858,28 @@ a.button .icon {
   width: 15px;
   height: 15px;
 }
+
+/* The collapsed setup panel: one line, no card, no border. It is a footnote
+   that happens to sit at the top, and it must not read as a section. */
+.panel-start.is-collapsed {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.start-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+/* A second heading inside a panel, for the borrow position under the index
+   one. Smaller than the panel's own h2 and separated by a rule, so the two
+   groups of figures do not read as one list. */
+.position-subhead {
+  margin: 8px 0 0;
+  padding-top: var(--gap);
+  border-top: 1px solid var(--color-border);
+  font-size: 1rem;
+}

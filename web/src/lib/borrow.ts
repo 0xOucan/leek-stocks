@@ -163,3 +163,20 @@ export function startingCollateral(suggested: bigint, balance: bigint, gasAllowa
   const comfortable = suggested * 2n;
   return comfortable > spendable ? spendable : comfortable;
 }
+
+/**
+ * The collateral ratio of an existing position.
+ *
+ * Separated from `troveQuote` because it answers a different question: the
+ * quote is about a position that does not exist yet, and this is about one
+ * that does, read straight from TroveManager. Both panels that show a live
+ * trove use it, so there is one formula rather than two that can drift.
+ *
+ * Null, never zero, when there is no debt or no price: a position with no
+ * debt has no ratio, and printing "0%" for it would name the one number that
+ * means "liquidate me immediately".
+ */
+export function currentIcr(collateral: bigint, price: bigint | null, debt: bigint): bigint | null {
+  if (price === null || price <= 0n || debt <= 0n) return null;
+  return (musdValueOf(collateral, price) * ONE) / debt;
+}

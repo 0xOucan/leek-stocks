@@ -20,8 +20,21 @@ import { applySlippage, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
 import { claimAvailability, freshness } from "./lib/staleness.ts";
 import { faucetAllowedOnChain, readFaucetToken, FAUCET_ABI, type FaucetToken } from "./faucet.ts";
 import { allowanceFor } from "./allowance.ts";
-import { FEE_MARGIN_BPS, GAS_COMPENSATION, formatIcr, startingCollateral, troveQuote } from "./lib/borrow.ts";
-import { currentStep, isComplete, onboardingSteps, type OnboardingStep } from "./lib/onboarding.ts";
+import {
+  FEE_MARGIN_BPS,
+  GAS_COMPENSATION,
+  currentIcr,
+  formatIcr,
+  startingCollateral,
+  troveQuote,
+} from "./lib/borrow.ts";
+import {
+  currentStep,
+  isSetUp,
+  onboardingSteps,
+  setupProgress,
+  type OnboardingStep,
+} from "./lib/onboarding.ts";
 import {
   BORROWER_OPERATIONS_ABI,
   TROVE_ACTIVE,
@@ -125,6 +138,15 @@ interface State {
   /** Set once, when the market and a balance are first known. */
   borrowPrefilled: boolean;
   borrowMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
+  /**
+   * Set only by the user clicking "show the setup steps".
+   *
+   * The panel hides itself once a wallet is set up, so this is the way back
+   * for someone helping a newcomer or connecting a second, empty wallet. It
+   * is never set by a poll: a panel that reappears on its own is the thing
+   * being fixed.
+   */
+  showSteps: boolean;
   faucetTokens: readonly FaucetToken[] | null;
   faucetMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
   walletMessage: string | null;
@@ -148,6 +170,7 @@ const state: State = {
   borrowCollateral: "",
   borrowPrefilled: false,
   borrowMessage: null,
+  showSteps: false,
   faucetTokens: null,
   faucetMessage: null,
   walletMessage: null,
@@ -655,26 +678,60 @@ function renderStart(): void {
 
   const list = steps();
   const current = currentStep(list);
-  const complete = isComplete(list);
-  const doneCount = list.filter((s) => s.state === "done").length;
-  // Five, not six: `redeem` is never done, so counting it would make the
-  // progress line read "5 of 6" for a user with nothing left to do.
-  const total = list.length - 1;
+  const progress = setupProgress(list);
+
+  /*
+   * Gone, not collapsed into a congratulation, once the wallet is set up.
+   *
+   * A wallet holding gas and something to spend can use every control on this
+   * page, so a panel above them explaining how to get there is furniture -
+   * and the first thing it said was "you are here: buy index shares", which
+   * the trade form asks for in its own words two panels down. The one line
+   * that stays is the way back for someone connecting a second, empty wallet
+   * or walking a newcomer through it; it is a link, not a tutorial, and it
+   * only opens when clicked.
+   */
+  if (isSetUp(list) && !state.showSteps) {
+    sections.start.classList.add("is-collapsed");
+    const reveal = el("button", { type: "button", class: "button button-ghost small" }, ["Show the setup steps"]);
+    reveal.addEventListener("click", () => {
+      state.showSteps = true;
+      renderStart();
+    });
+    sections.start.append(
+      el("p", { class: "muted small start-collapsed" }, [
+        `This wallet is ready: it holds ${mezoTestnet.nativeCurrency.symbol} for gas and MUSD to spend. `,
+        reveal,
+      ]),
+    );
+    return;
+  }
+  sections.start.classList.remove("is-collapsed");
+
+  const head: HTMLElement[] = [
+    el("h2", { id: "start-heading" }, ["Start here"]),
+    el("p", { class: "muted small" }, [
+      // Counted, not written: the list is the source of truth for its own
+      // length, and "four steps" above a list of five is the kind of small
+      // wrongness that makes a reader distrust the rest.
+      `${progress.total} steps from an empty wallet to MUSD you can spend. The page works out which one you are on and only ever asks you for that one.`,
+    ]),
+  ];
+  if (state.showSteps && isSetUp(list)) {
+    // Shown on request by a wallet that did not need it, so it says so and
+    // offers the way back out.
+    const hide = el("button", { type: "button", class: "button button-ghost small" }, ["Hide these"]);
+    hide.addEventListener("click", () => {
+      state.showSteps = false;
+      renderStart();
+    });
+    head.push(el("p", { class: "muted small" }, ["This wallet has done all of it already. ", hide]));
+  }
 
   sections.start.append(
     el("div", { class: "start-head" }, [
-      el("div", {}, [
-        el("h2", { id: "start-heading" }, [complete ? "You are set up" : "Start here"]),
-        el("p", { class: "muted small" }, [
-          complete
-            ? "Everything below is yours to use. The same steps stay on screen in case you want to add a position from a second wallet."
-            // Counted, not written: the list is the source of truth for its
-            // own length, and "four steps" above a list of five is the kind
-            // of small wrongness that makes a reader distrust the rest.
-            : `${total} steps from an empty wallet to a position. The page works out which one you are on and only ever asks you for that one.`,
-        ]),
-      ]),
-      el("p", { class: "start-progress mono" }, [`${doneCount} / ${total}`]),
+      el("div", {}, head),
+      el("p", { class: "start-progress mono" }, [`${progress.done} / ${progress.total}`]),
     ]),
   );
 
@@ -1247,10 +1304,7 @@ function renderBorrow(): void {
   // a trove, so offering the form again would be offering a revert.
   const trove = state.trove;
   if (trove && trove.status === TROVE_ACTIVE) {
-    const icr =
-      market.price !== null && trove.debt > 0n
-        ? ((trove.collateral * market.price) / 10n ** 18n) * 10n ** 18n / trove.debt
-        : null;
+    const icr = currentIcr(trove.collateral, market.price, trove.debt);
     sections.borrow.append(
       el("div", { class: "stats" }, [
         stat("Collateral locked", `${formatAmount(trove.collateral, 18, 8)} ${mezoTestnet.nativeCurrency.symbol}`, formatUnits(trove.collateral, 18), "returned when the debt is repaid"),
@@ -1669,6 +1723,55 @@ function renderPosition(): void {
       el("div", { class: "card-foot" }, [
         el("span", { class: "muted small" }, ["Share token"]),
         addressChip(market.share, truncateAddress(market.share), explorerAddressUrl(market.share)),
+      ]),
+    );
+  }
+
+  /*
+   * The borrow position, for anyone who has one.
+   *
+   * It lived only in the borrow panel, which hides itself behind an existing
+   * position and is below this one - so the panel called "Your position"
+   * showed a balance of borrowed MUSD and said nothing about the debt that
+   * produced it or the BTC locked against it. That is the half of a position
+   * a holder most needs to see: the MUSD is theirs to spend and the debt is
+   * theirs to repay, and only one of them was on screen.
+   */
+  const trove = state.trove;
+  if (trove && trove.status === TROVE_ACTIVE) {
+    const price = state.borrowMarket?.price ?? null;
+    const icr = currentIcr(trove.collateral, price, trove.debt);
+    const symbol = mezoTestnet.nativeCurrency.symbol;
+    sections.position.append(
+      el("h3", { class: "position-subhead" }, [`Your borrow position on ${mezoTestnet.name}`]),
+      el("div", { class: "stats" }, [
+        stat(
+          `${symbol} locked`,
+          formatAmount(trove.collateral, mezoTestnet.nativeCurrency.decimals, 8),
+          formatUnits(trove.collateral, mezoTestnet.nativeCurrency.decimals),
+          "collateral, returned when the debt is repaid",
+        ),
+        stat(
+          "MUSD owed",
+          formatAmount(trove.debt, MUSD_DECIMALS, 2),
+          formatUnits(trove.debt, MUSD_DECIMALS),
+          `includes the ${GAS_COMPENSATION / 10n ** 18n} MUSD liquidation reserve`,
+        ),
+        stat(
+          "Collateral ratio",
+          formatIcr(icr),
+          undefined,
+          /* The threshold, not a reassurance. Whether a given ratio is
+             comfortable is the holder's call, and on this testnet - where BTC
+             is priced at twenty million dollars - every honest ratio is
+             enormous and saying "healthy" would teach the wrong reflex. */
+          "liquidatable below 110%",
+        ),
+      ]),
+      el("p", { class: "muted small" }, [
+        "This is a position in Mezo's own borrow market, not in ours. Repaying it or closing it is done in ",
+        el("a", { href: "https://mezo.org", target: "_blank", rel: "noopener noreferrer" }, ["Mezo's app"]),
+        "; this page deliberately has no button that adjusts or closes a position, because getting that wrong costs collateral.",
       ]),
     );
   }

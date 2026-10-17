@@ -1,6 +1,13 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { FEE_MARGIN_BPS, GAS_COMPENSATION, formatIcr, startingCollateral, troveQuote } from "../src/lib/borrow.ts";
+import {
+  FEE_MARGIN_BPS,
+  GAS_COMPENSATION,
+  currentIcr,
+  formatIcr,
+  startingCollateral,
+  troveQuote,
+} from "../src/lib/borrow.ts";
 
 const ONE = 10n ** 18n;
 /** Mezo testnet's real feed: $20,000,000 a BTC. */
@@ -130,4 +137,22 @@ test("a wallet that cannot cover the minimum ratio is offered nothing", () => {
 test("nothing suggested means nothing offered, with no negative wei", () => {
   assert.equal(startingCollateral(0n, ONE, GAS), 0n);
   assert.equal(startingCollateral(ONE / 1000n, 0n, GAS), 0n);
+});
+
+test("currentIcr agrees with the chain for the live position", () => {
+  /* Same reading as the formula test above, through the function the panels
+     actually call, so the two cannot drift apart. */
+  const chain = 99551329979908049209n;
+  const icr = currentIcr(ONE / 100n, PRICE, 2009013835172674471222n);
+  assert.ok(icr !== null);
+  const drift = icr > chain ? icr - chain : chain - icr;
+  assert.ok(drift * 10_000_000n < chain);
+});
+
+test("a position with no debt has no ratio, rather than a ratio of zero", () => {
+  // 0% is the one number that means "liquidate me now". A closed or empty
+  // trove must not render as one.
+  assert.equal(currentIcr(ONE, PRICE, 0n), null);
+  assert.equal(currentIcr(ONE, null, ONE), null);
+  assert.equal(currentIcr(ONE, 0n, ONE), null);
 });
