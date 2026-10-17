@@ -29,7 +29,8 @@ through dRPC and Boar, `0x7b7b` on testnet. Gas is BTC, not ether, on both.
 | Network | Address | How verified | When |
 |---|---|---|---|
 | Mezo mainnet | `0xdD468A1DDc392dcdbEf6db6e34E89AA338F9F186` | `symbol()` = MUSD, `decimals()` = 18, over dRPC; cross-checked against Mezo's published contracts reference | 2026-10-16 |
-| Mezo testnet | `0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503` | same, over `rpc.test.mezo.org`; also asserted by `test/fork/MezoFork.t.sol` at a pinned block | 2026-10-16 |
+| **Mezo testnet (what we settle in)** | `0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af` | `symbol()` = MUSD, `decimals()` = 18, and **`mintList(BorrowerOperations)` = true**, so this is the one a user can obtain by borrowing. Read back from each deployed vault with `musd()`. | 2026-10-17 |
+| Mezo testnet (the documented one, **not** used) | `0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503` | `symbol()` = MUSD and `decimals()` = 18 over `rpc.test.mezo.org`, and asserted by `test/fork/MezoFork.t.sol` at a pinned block — but `mintList(BorrowerOperations)` is **false**, so nobody can obtain it by borrowing. See the two-MUSD table below. | 2026-10-17 |
 | Ethereum | `0xdD468A1DDc392dcdbEf6db6e34E89AA338F9F186` | `symbol()` = MUSD on an Ethereum RPC | 2026-10-16 |
 | Base | `0xdD468A1DDc392dcdbEf6db6e34E89AA338F9F186` | `symbol()` = MUSD on a Base RPC | 2026-10-16 |
 | **BNB Chain** | **none** | `eth_getCode` at the address above returned empty on BNB | 2026-10-16 |
@@ -122,6 +123,45 @@ and by the cross-checks in the section above. These come from
 size, so the implementations behind them can change without these addresses
 changing. Verify with `cast call` before relying on any of them, and prefer
 asking a contract for its peers (as above) over trusting a list.
+
+### What the front end calls, and the parameters it reads
+
+The dapp opens positions here directly (`web/src/mezoBorrow.ts`), so these are
+load-bearing. Every one was recovered by calling the live contract, because
+the implementation behind the proxy is **not verified** and publishes no ABI.
+
+```
+openTrove(uint256 debtAmount, address upperHint, address lowerHint)  payable
+  selector 0x2f3a6d98
+```
+
+**This is not Liquity v1's signature**, which is what the documentation and
+every model will tell you: there is no `maxFeePercentage`, and the collateral
+is `msg.value` rather than an argument. The hints are insertion points into
+the sorted trove list; zero is always correct and merely costs gas.
+
+Read, never hardcoded, because all four are governance-settable or move:
+
+| Call | On | Value on 2026-10-17 | Means |
+|---|---|---|---|
+| `minNetDebt()` | `BorrowerOperations` | `1800e18` | smallest borrow accepted |
+| `MCR()` | `BorrowerOperations` | `1.1e18` | 110%; liquidatable below |
+| `CCR()` | `BorrowerOperations` | `1.5e18` | the system's recovery threshold |
+| `MUSD_GAS_COMPENSATION()` | both | `200e18` | added to the **debt**, held as the liquidation reserve, returned on close |
+| `fetchPrice()` | `PriceFeed` | `2e25` | MUSD per BTC — **$20,000,000** on testnet |
+| `getTroveStatus(address)` | `TroveManager` | `0`/`1` | 0 nonExistent, 1 active, 2 closedByOwner, 3 closedByLiquidation |
+| `getTroveDebt` / `getTroveColl` | `TroveManager` | — | the position |
+
+**There is no readable issuance fee.** Every getter Liquity v1 would expose —
+`getBorrowingFee`, `getBorrowingRate`, `getBorrowingFeeWithDecay`,
+`borrowingFeeFloor` — reverts or does not exist here. Opening an 1800 MUSD
+trove produced a debt of 2009.0138 MUSD (1800 + 200 + 9.01), so the fee is
+0.5%; the front end quotes 1% instead, because a quote that understates the
+debt understates the collateral needed and the cost of being wrong in that
+direction is a liquidation.
+
+One address holds at most one trove: a second `openTrove` reverts. The page
+reads `getTroveStatus` and shows the existing position instead of a form.
 
 ## Ours
 

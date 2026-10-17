@@ -56,6 +56,38 @@ export const MARKETS: readonly MarketConfig[] = [
   },
 ];
 
+/** Resolved once, because three things below branch on it. */
+const CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID ?? 31_611);
+
+/**
+ * Mezo's own contracts, which we did not deploy and cannot choose.
+ *
+ * Defaulted per chain id rather than required in the environment: these
+ * addresses are properties of Mezo testnet, not of our deployment, so a build
+ * that forgot to set them would silently lose the one step that gets a user
+ * their first MUSD. Overridable all the same, because the proxy can move and
+ * a stale default is worse than a configured one.
+ *
+ * Only BorrowerOperations is listed. troveManager, priceFeed and musd are
+ * read FROM it at runtime: it knows which ones it is wired to and this file
+ * does not, and three more addresses here is three more things to go stale.
+ */
+function mezoBorrowerOperations(chainId: number): Address | undefined {
+  if (chainId === 31_611) return getAddress("0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba");
+  // No default for mainnet Mezo: this has never been tested there, and
+  // guessing an address for a market that mints real debt is not a default.
+  return undefined;
+}
+
+/**
+ * Mezo's faucet, which hands out the testnet BTC that is both gas and
+ * collateral here. A link rather than a call: it is a hosted web form with a
+ * captcha, not a contract this page could invoke.
+ */
+function mezoFaucetUrl(chainId: number): string | undefined {
+  return chainId === 31_611 ? "https://faucet.test.mezo.org" : undefined;
+}
+
 export const CONFIG = {
   rpcUrl: import.meta.env.VITE_RPC_URL ?? "https://rpc.test.mezo.org",
   /*
@@ -64,7 +96,7 @@ export const CONFIG = {
    * failed viem's chain assertion because the client still said 31611. A
    * rehearsal against a local chain could therefore read but never buy.
    */
-  chainId: Number(import.meta.env.VITE_CHAIN_ID ?? 31_611),
+  chainId: CHAIN_ID,
   /**
    * The feed's `/prices` endpoint. Relative by default, because Caddy proxies
    * `/prices` on this same host to the feed container: a same-origin request
@@ -83,6 +115,14 @@ export const CONFIG = {
    * and decimals from the token itself.
    */
   faucetTokens: addressList(import.meta.env.VITE_FAUCET_TOKENS),
+  /** Mezo's native borrow market, where MUSD is minted against BTC. */
+  borrowerOperations:
+    optionalAddress(import.meta.env.VITE_BORROWER_OPERATIONS) ??
+    mezoBorrowerOperations(CHAIN_ID),
+  /** Where to send someone who holds no BTC at all. */
+  nativeFaucetUrl:
+    (import.meta.env.VITE_NATIVE_FAUCET_URL ?? "").trim() ||
+    mezoFaucetUrl(CHAIN_ID),
 } as const;
 
 /** Nothing on this page works without a vault address, so it has one check. */

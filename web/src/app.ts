@@ -20,13 +20,27 @@ import { applySlippage, quoteBuy, quoteRedeem, solvency } from "./lib/quote.ts";
 import { claimAvailability, freshness } from "./lib/staleness.ts";
 import { faucetAllowedOnChain, readFaucetToken, FAUCET_ABI, type FaucetToken } from "./faucet.ts";
 import { allowanceFor } from "./allowance.ts";
+import { FEE_MARGIN_BPS, GAS_COMPENSATION, SAFE_ICR, formatIcr, troveQuote } from "./lib/borrow.ts";
+import { currentStep, isComplete, onboardingSteps, type OnboardingStep } from "./lib/onboarding.ts";
+import {
+  BORROWER_OPERATIONS_ABI,
+  TROVE_ACTIVE,
+  ZERO_ADDRESS,
+  readBorrowMarket,
+  readTrove,
+  type BorrowMarket,
+  type TrovePosition,
+} from "./mezoBorrow.ts";
 import { readBalances, readMarket, readVaultPrice, type Balances, type MarketState } from "./market.ts";
 import {
+  ICONS,
   actionButton,
   addressChip,
   clear,
   el,
+  icon,
   notice,
+  preservingFocus,
   stat,
   type ActionButton,
 } from "./ui/dom.ts";
@@ -35,6 +49,58 @@ import { connect, onWalletsChanged, startWalletDiscovery, switchToMezo, walletOp
 const MUSD_DECIMALS = 18; // Confirmed against the live token by test/fork/MezoFork.t.sol.
 const SHARE_DECIMALS = 18;
 const DEFAULT_SLIPPAGE_BPS = 50;
+
+/**
+ * Gas money, on top of whatever is being locked as collateral.
+ *
+ * 0.0001 BTC. Mezo's base fee is measured in hundreds of wei, so opening a
+ * trove costs a rounding error of this; the margin is for the padding wallets
+ * add to their own estimates.
+ */
+const GAS_ALLOWANCE = 10n ** 14n;
+
+/**
+ * The fallback "enough BTC" line, used only before the price is known.
+ *
+ * It is a fallback and not the rule, because the rule cannot be a constant:
+ * how much BTC is enough depends on the live BTC price, and Mezo's faucet
+ * does not publish its drip amount anywhere this page can read - its page is
+ * a JavaScript shell. So the real threshold is computed from what the next
+ * step actually needs (see `minNativeNeeded`) and this number is only what
+ * the stepper uses in the moment before the first price read lands. Guessing
+ * a threshold would mean a faucet that drips less than the guess leaves the
+ * step permanently unticked, with no way for a user to proceed.
+ */
+const MIN_NATIVE_FALLBACK = 5n * 10n ** 14n;
+
+/**
+ * Enough BTC to open the position currently in the form, plus gas.
+ *
+ * Self-consistent by construction: if this returns true the borrow button
+ * below will not be blocked for want of collateral, and if it returns false
+ * that button would be. The stepper and the form cannot disagree.
+ */
+function minNativeNeeded(): bigint {
+  const market = state.borrowMarket;
+  if (!market || market.price === null) return MIN_NATIVE_FALLBACK;
+  const quote = troveQuote({
+    debtRequested: borrowDebtWei() ?? market.minNetDebt,
+    collateral: 0n,
+    price: market.price,
+    minNetDebt: market.minNetDebt,
+    mcr: market.mcr,
+    balance: 0n,
+  });
+  // The suggested figure, not the protocol's 110% minimum: the form refuses
+  // anything under 150%, so 110% is not a state a user can reach from here.
+  return quote.suggestedCollateral + GAS_ALLOWANCE;
+}
+
+/** Below this there is not enough MUSD to buy a share worth looking at. */
+const MIN_MUSD = 10n ** 18n;
+
+/** What the borrow form starts at: the protocol's own minimum. */
+const DEFAULT_BORROW = "1800";
 
 type Mode = "buy" | "redeem";
 
@@ -50,6 +116,15 @@ interface State {
   prices: Record<string, bigint | null>;
   balances: Balances | null;
   /** Per-section messages, kept beside the control that produced them. */
+  /** Mezo's borrow market, read from the chain. Null when not on Mezo. */
+  borrowMarket: BorrowMarket | null;
+  /** The connected address's position in it. */
+  trove: TrovePosition | null;
+  borrowDebt: string;
+  borrowCollateral: string;
+  /** Set once, when the market and a balance are first known. */
+  borrowPrefilled: boolean;
+  borrowMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
   faucetTokens: readonly FaucetToken[] | null;
   faucetMessage: { kind: "error" | "ok"; text: string; name?: string } | null;
   walletMessage: string | null;
@@ -67,6 +142,12 @@ const state: State = {
   market: null,
   prices: {},
   balances: null,
+  borrowMarket: null,
+  trove: null,
+  borrowDebt: DEFAULT_BORROW,
+  borrowCollateral: "",
+  borrowPrefilled: false,
+  borrowMessage: null,
   faucetTokens: null,
   faucetMessage: null,
   walletMessage: null,
@@ -129,7 +210,9 @@ function nextStep(): Step {
 const root = document.querySelector<HTMLElement>("#app");
 const sections = {
   wallet: el("div", { class: "wallet-bar" }),
+  start: el("section", { class: "panel panel-start", id: "start", "aria-labelledby": "start-heading" }),
   indices: el("section", { class: "panel", id: "indices", "aria-labelledby": "indices-heading" }),
+  borrow: el("section", { class: "panel", id: "borrow", "aria-labelledby": "borrow-heading" }),
   trade: el("section", { class: "panel", id: "trade", "aria-labelledby": "trade-heading" }),
   position: el("section", { class: "panel", id: "position", "aria-labelledby": "position-heading" }),
   faucet: el("section", { class: "panel", id: "faucet", "aria-labelledby": "faucet-heading" }),
@@ -173,7 +256,9 @@ export function mount(): void {
       ]),
       sections.wallet,
     ]),
+    sections.start,
     sections.indices,
+    sections.borrow,
     sections.trade,
     sections.position,
     sections.faucet,
@@ -207,8 +292,11 @@ export function mount(): void {
     // A failed poll keeps the previous values and adds a banner rather than
     // blanking the cards: a blank card reads as "price is zero".
     state.feed = snapshot.indices ? snapshot : { indices: state.feed.indices, error: snapshot.error };
-    renderIndices();
-    renderTrade();
+    preservingFocus(() => {
+      renderIndices();
+      renderTrade();
+      renderStart();
+    });
   });
   /* Chain reads every 5 seconds, not every 15.
      Fifteen seconds was chosen because chain reads are slower than the feed
@@ -234,6 +322,8 @@ export function mount(): void {
 
 function renderAll(): void {
   renderWallet();
+  renderStart();
+  renderBorrow();
   renderIndices();
   renderTrade();
   renderPosition();
@@ -257,7 +347,21 @@ async function refreshChain(): Promise<void> {
       ]),
     ),
   ) as Record<string, bigint | null>;
+  /* Mezo's borrow market, every poll.
+     Its parameters are governance-settable and its price moves, and this page
+     quotes a user the collateral they are about to lock against them. A
+     cached minNetDebt or a cached BTC price is a quote that the chain will
+     refuse - or worse, accept at a ratio the user did not intend. */
+  if (CONFIG.borrowerOperations) {
+    state.borrowMarket = await readBorrowMarket();
+  }
+
   const connection = state.connection;
+  if (connection && CONFIG.borrowerOperations) {
+    state.trove = await readTrove(connection.address);
+  } else {
+    state.trove = null;
+  }
   if (connection && CONFIG.musd && market.share && market.vault) {
     state.balances = await readBalances(connection.address, CONFIG.musd, market.share, market.vault);
   }
@@ -270,10 +374,67 @@ async function refreshChain(): Promise<void> {
   } else {
     state.faucetTokens = null;
   }
-  renderIndices();
-  renderTrade();
-  renderPosition();
-  renderFaucet();
+  renderStart();
+  renderBorrow();
+  /* Prefilled once, after the first read that knows both the price and the
+     wallet's balance - not from a constant. The collateral a borrow needs is
+     a function of the live BTC price, so a hardcoded default would be either
+     absurdly over-collateralised or a revert, depending on the day. */
+  maybePrefillBorrow();
+  /* Wrapped, because this one runs on a five-second timer rather than in
+     response to anything the user did. The caret belongs to them. */
+  preservingFocus(() => {
+    renderStart();
+    renderBorrow();
+    renderIndices();
+    renderTrade();
+    renderPosition();
+    renderFaucet();
+  });
+}
+
+/** The borrow field in base units, or null when it is empty or malformed. */
+function borrowDebtWei(): bigint | null {
+  const parsed = parseAmount(state.borrowDebt, MUSD_DECIMALS);
+  return parsed.ok ? parsed.value : null;
+}
+
+/** The collateral field in wei, or null. */
+function borrowCollateralWei(): bigint | null {
+  const parsed = parseAmount(state.borrowCollateral, mezoTestnet.nativeCurrency.decimals);
+  return parsed.ok ? parsed.value : null;
+}
+
+/**
+ * A starting collateral figure: twice what 150% needs.
+ *
+ * Twice, not exactly 150%: the suggested figure is a boundary, and a user who
+ * accepts a boundary is one price tick from being refused by this page's own
+ * floor. Doubling it costs nothing on a testnet and makes the default
+ * position one that survives a move.
+ */
+function maybePrefillBorrow(): void {
+  if (state.borrowPrefilled) return;
+  const market = state.borrowMarket;
+  const balance = state.balances?.native ?? null;
+  if (!market || market.price === null || balance === null) return;
+
+  const quote = troveQuote({
+    debtRequested: borrowDebtWei() ?? market.minNetDebt,
+    collateral: 0n,
+    price: market.price,
+    minNetDebt: market.minNetDebt,
+    mcr: market.mcr,
+    balance,
+  });
+  const target = quote.suggestedCollateral * 2n;
+  // Never more than a tenth of the wallet: a prefilled field that exceeds the
+  // balance renders as an error before the user has typed anything, which
+  // reads as the page being broken rather than as a suggestion.
+  const capped = balance / 10n < target ? balance / 10n : target;
+  if (capped <= 0n) return;
+  state.borrowCollateral = formatUnits(capped, 18);
+  state.borrowPrefilled = true;
 }
 
 /* ------------------------------------------------------------- wallet bar */
@@ -384,6 +545,195 @@ function renderWallet(): void {
   }
   sections.wallet.append(list);
   if (state.walletMessage) sections.wallet.append(notice("error", state.walletMessage));
+}
+
+
+/* ------------------------------------------------------------- get started */
+
+/**
+ * Where the user is in the flow.
+ *
+ * Derived from chain state on every poll rather than remembered, so it is
+ * correct for someone arriving with a wallet that has already done half of
+ * it - which is most returning testers, and all of my own reloads.
+ */
+function steps(): readonly OnboardingStep[] {
+  return onboardingSteps({
+    connected: state.connection !== null,
+    onRightChain: onRightChain(),
+    native: state.balances?.native ?? 0n,
+    musd: state.balances?.musd ?? 0n,
+    shares: state.balances?.shares ?? 0n,
+    hasTrove: state.trove?.status === TROVE_ACTIVE,
+    minNative: minNativeNeeded(),
+    minMusd: MIN_MUSD,
+  });
+}
+
+/** Scrolls a panel into view and moves focus into it, for keyboard users. */
+function goToSection(id: "borrow" | "trade"): void {
+  const panel = sections[id];
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  // tabindex -1 so focus can land on a section that is not itself focusable;
+  // without it the scroll moves the viewport and leaves the keyboard caret
+  // wherever it was, which is the classic "skip link that does nothing".
+  panel.setAttribute("tabindex", "-1");
+  panel.focus({ preventScroll: true });
+}
+
+/**
+ * The one action the current step needs, or null when the step is satisfied
+ * elsewhere on the page.
+ *
+ * Deliberately not a button per step: five buttons, four of them disabled, is
+ * the pattern this page spent its whole trade section avoiding. One action,
+ * and it is always the one that works right now.
+ */
+function stepAction(step: OnboardingStep): HTMLElement | null {
+  const connection = state.connection;
+
+  if (step.id === "connect") {
+    const button = el("button", { type: "button", class: "button" }, ["Choose a wallet"]);
+    button.addEventListener("click", () => {
+      document.querySelector<HTMLElement>(".wallet-options button:not([disabled])")?.focus();
+    });
+    return button;
+  }
+
+  if (step.id === "network" && connection) {
+    return actionButton({
+      label: `Switch to ${mezoTestnet.name}`,
+      pendingLabel: "Confirm in your wallet…",
+      onClick: async () => {
+        try {
+          await switchToMezo(connection.provider);
+          const chainId = (await connection.provider.request({ method: "eth_chainId" })) as string;
+          state.connection = { ...connection, chainId: Number.parseInt(chainId, 16) };
+          await refreshChain();
+        } catch (error) {
+          state.walletMessage = describeError(error).message;
+        } finally {
+          renderAll();
+        }
+      },
+    }).element;
+  }
+
+  if (step.id === "gas") {
+    /* An external link, not a transaction. Mezo's faucet is a hosted form
+       with a captcha; there is no contract this page could call, and
+       pretending otherwise with a button that opens a new tab under a
+       "Claim" label would be a lie about what is happening. */
+    if (!CONFIG.nativeFaucetUrl) return null;
+    return el("a", {
+      class: "button",
+      href: CONFIG.nativeFaucetUrl,
+      target: "_blank",
+      rel: "noopener noreferrer",
+    }, [`Open Mezo's faucet`, icon(ICONS.external)]);
+  }
+
+  if (step.id === "borrow") {
+    const button = el("button", { type: "button", class: "button" }, ["Borrow MUSD"]);
+    button.addEventListener("click", () => goToSection("borrow"));
+    return button;
+  }
+
+  if (step.id === "buy" || step.id === "redeem") {
+    const button = el("button", { type: "button", class: `button${step.id === "redeem" ? " button-secondary" : ""}` }, [
+      step.id === "buy" ? "Go to buy" : "Go to redeem",
+    ]);
+    button.addEventListener("click", () => {
+      if (step.id === "redeem") {
+        state.mode = "redeem";
+        state.amount = "";
+        renderTrade();
+      }
+      goToSection("trade");
+    });
+    return button;
+  }
+
+  return null;
+}
+
+function renderStart(): void {
+  clear(sections.start);
+
+  const list = steps();
+  const current = currentStep(list);
+  const complete = isComplete(list);
+  const doneCount = list.filter((s) => s.state === "done").length;
+  // Five, not six: `redeem` is never done, so counting it would make the
+  // progress line read "5 of 6" for a user with nothing left to do.
+  const total = list.length - 1;
+
+  sections.start.append(
+    el("div", { class: "start-head" }, [
+      el("div", {}, [
+        el("h2", { id: "start-heading" }, [complete ? "You are set up" : "Start here"]),
+        el("p", { class: "muted small" }, [
+          complete
+            ? "Everything below is yours to use. The same steps stay on screen in case you want to add a position from a second wallet."
+            // Counted, not written: the list is the source of truth for its
+            // own length, and "four steps" above a list of five is the kind
+            // of small wrongness that makes a reader distrust the rest.
+            : `${total} steps from an empty wallet to a position. The page works out which one you are on and only ever asks you for that one.`,
+        ]),
+      ]),
+      el("p", { class: "start-progress mono" }, [`${doneCount} / ${total}`]),
+    ]),
+  );
+
+  if (!CONFIG.borrowerOperations) {
+    sections.start.append(
+      notice(
+        "warning",
+        `No borrow market is configured for chain ${CONFIG.chainId}, so there is no way to obtain MUSD from this page. On Mezo testnet this is set by default; elsewhere, set VITE_BORROWER_OPERATIONS or use the test-token faucet below.`,
+      ),
+    );
+  }
+  if (state.borrowMarket?.mismatch) {
+    // The worst failure available here, so it is said first and in red.
+    sections.start.append(notice("error", state.borrowMarket.mismatch));
+  }
+
+  const ol = el("ol", { class: "steps" });
+  for (const [index, step] of list.entries()) {
+    const action = step.state === "current" ? stepAction(step) : null;
+    ol.append(
+      el("li", { class: `step is-${step.state}`, "aria-current": step.state === "current" ? "step" : undefined }, [
+        el("span", { class: "step-marker", "aria-hidden": "true" }, [
+          step.state === "done" ? icon(ICONS.check) : String(index + 1),
+        ]),
+        el("div", { class: "step-body" }, [
+          el("p", { class: "step-title" }, [
+            step.title,
+            // The state is in the text, not only in the colour: the whole
+            // stepper would otherwise be unreadable to anyone who cannot
+            // distinguish the done green from the current blue.
+            el("span", { class: "step-state muted small" }, [
+              step.state === "done" ? " · done" : step.state === "current" ? " · you are here" : "",
+            ]),
+          ]),
+          el("p", { class: "muted small" }, [step.detail]),
+          action,
+        ].filter((node): node is HTMLElement => node !== null && node !== undefined)),
+      ]),
+    );
+  }
+  sections.start.append(ol);
+
+  if (current?.id === "gas" && CONFIG.nativeFaucetUrl) {
+    sections.start.append(
+      el("p", { class: "muted small" }, [
+        `The faucet sends ${mezoTestnet.nativeCurrency.symbol} to the address you paste in. Copy yours from the top of this page, and come back when it arrives - this step ticks itself off within five seconds.`,
+      ]),
+    );
+  }
+  if (state.walletMessage && current?.id === "network") {
+    sections.start.append(notice("error", state.walletMessage));
+  }
 }
 
 /* ----------------------------------------------------------------- indices */
@@ -840,6 +1190,284 @@ function renderTrade(): void {
   }
 
   renderQuote();
+}
+
+
+/* ------------------------------------------------------------------ borrow */
+
+/**
+ * Mezo's native borrow market, in a panel.
+ *
+ * Nothing here is ours. This calls Mezo's own BorrowerOperations, which mints
+ * the MUSD that our vaults settle in, and it exists because that was the one
+ * step in the flow a visitor could not do from this page. It is the only
+ * place on the site that creates a debt, so it says so in those words, more
+ * than once, and never while a quote is on screen that would hide it.
+ */
+function renderBorrow(): void {
+  clear(sections.borrow);
+  sections.borrow.append(el("h2", { id: "borrow-heading" }, ["Get MUSD: borrow against BTC"]));
+
+  const market = state.borrowMarket;
+  const connection = state.connection;
+
+  if (!CONFIG.borrowerOperations) {
+    sections.borrow.append(
+      el("p", { class: "muted" }, [
+        `Chain ${CONFIG.chainId} has no configured borrow market, so MUSD cannot be minted from this page.`,
+      ]),
+    );
+    return;
+  }
+
+  sections.borrow.append(
+    el("p", { class: "muted small" }, [
+      "This page settles in MUSD and mints none of it. MUSD comes from Mezo's own borrow market: you lock ",
+      el("strong", {}, [mezoTestnet.nativeCurrency.symbol]),
+      " as collateral and it mints MUSD against it. It is a loan, not a swap - the ",
+      el("strong", {}, [mezoTestnet.nativeCurrency.symbol]),
+      " comes back when the debt is repaid, and it can be liquidated if the collateral ratio falls too far.",
+    ]),
+    el("div", { class: "card-foot" }, [
+      el("span", { class: "muted small" }, ["Mezo BorrowerOperations"]),
+      addressChip(
+        CONFIG.borrowerOperations,
+        truncateAddress(CONFIG.borrowerOperations),
+        explorerAddressUrl(CONFIG.borrowerOperations),
+      ),
+    ]),
+  );
+
+  if (market?.mismatch) {
+    sections.borrow.append(notice("error", market.mismatch));
+    return;
+  }
+  if (!market) {
+    sections.borrow.append(
+      el("p", { class: "muted" }, ["Reading Mezo's borrow market…"]),
+    );
+    return;
+  }
+
+  // An existing position, which is the common case on a second visit. There
+  // is no second openTrove: the call reverts for an address that already has
+  // a trove, so offering the form again would be offering a revert.
+  const trove = state.trove;
+  if (trove && trove.status === TROVE_ACTIVE) {
+    const icr =
+      market.price !== null && trove.debt > 0n
+        ? ((trove.collateral * market.price) / 10n ** 18n) * 10n ** 18n / trove.debt
+        : null;
+    sections.borrow.append(
+      el("div", { class: "stats" }, [
+        stat("Collateral locked", `${formatAmount(trove.collateral, 18, 8)} ${mezoTestnet.nativeCurrency.symbol}`, formatUnits(trove.collateral, 18), "returned when the debt is repaid"),
+        stat("Debt owed", `${formatAmount(trove.debt, MUSD_DECIMALS, 2)} MUSD`, formatUnits(trove.debt, MUSD_DECIMALS), `includes the ${GAS_COMPENSATION / 10n ** 18n} MUSD liquidation reserve`),
+        stat("Collateral ratio", formatIcr(icr), undefined, "liquidatable below 110%"),
+      ]),
+      notice(
+        "ok",
+        "You already have a position in Mezo's borrow market, so the MUSD you need is either in your wallet or in shares. One address can hold one position: opening a second reverts, and this page will not offer it.",
+      ),
+      el("p", { class: "muted small" }, [
+        "To borrow more against the same collateral, repay, or close the position and get the ",
+        mezoTestnet.nativeCurrency.symbol,
+        " back, use Mezo's own app: ",
+        el("a", { href: "https://mezo.org", target: "_blank", rel: "noopener noreferrer" }, ["mezo.org"]),
+        ". This page only ever opens a position; it deliberately has no button that adjusts or closes one, because getting that wrong costs collateral.",
+      ]),
+    );
+    return;
+  }
+
+  if (!connection) {
+    sections.borrow.append(el("p", { class: "muted" }, ["Connect a wallet to borrow."]));
+    return;
+  }
+  if (!onRightChain()) {
+    sections.borrow.append(notice("warning", `Switch to ${mezoTestnet.name} first: this market exists only there.`));
+    return;
+  }
+
+  const balance = state.balances?.native ?? 0n;
+  const debtInput = el("input", {
+    class: "input mono",
+    id: "borrow-debt",
+    type: "text",
+    inputmode: "decimal",
+    autocomplete: "off",
+    spellcheck: false,
+    placeholder: DEFAULT_BORROW,
+    value: state.borrowDebt,
+  });
+  const collateralInput = el("input", {
+    class: "input mono",
+    id: "borrow-collateral",
+    type: "text",
+    inputmode: "decimal",
+    autocomplete: "off",
+    spellcheck: false,
+    placeholder: "0.0",
+    value: state.borrowCollateral,
+  });
+
+  const quoteBox = el("div", { class: "quote", "aria-live": "polite" });
+  const actionRow = el("div", { class: "action-row" });
+  const messageBox = el("div", { class: "messages" });
+
+  const suggestButton = el("button", { type: "button", class: "button button-ghost small" }, ["Suggest"]);
+
+  debtInput.addEventListener("input", () => {
+    state.borrowDebt = debtInput.value;
+    renderBorrowQuote();
+  });
+  collateralInput.addEventListener("input", () => {
+    state.borrowCollateral = collateralInput.value;
+    renderBorrowQuote();
+  });
+
+  sections.borrow.append(
+    el("div", { class: "field-pair" }, [
+      el("div", { class: "field" }, [
+        el("label", { class: "field-label", for: "borrow-debt" }, ["Borrow (MUSD)"]),
+        debtInput,
+        el("p", { class: "muted small" }, [
+          `Minimum ${formatAmount(market.minNetDebt, MUSD_DECIMALS, 0)} MUSD, set by the protocol.`,
+        ]),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { class: "field-label", for: "borrow-collateral" }, [
+          `Lock (${mezoTestnet.nativeCurrency.symbol})`,
+        ]),
+        el("div", { class: "field-row" }, [collateralInput, suggestButton]),
+        el("p", { class: "muted small" }, [
+          `You hold ${formatAmount(balance, 18, 8)} ${mezoTestnet.nativeCurrency.symbol}.`,
+        ]),
+      ]),
+    ]),
+    quoteBox,
+    actionRow,
+    messageBox,
+  );
+
+  /** The quote, the action and the messages. Re-rendered on every keystroke. */
+  function renderBorrowQuote(): void {
+    // Re-checked rather than relying on the guard above: this is a hoisted
+    // function declaration, so the compiler will not carry the outer
+    // narrowing into it, and a `!` here would be asserting something about
+    // call order instead of checking it.
+    if (!market) return;
+    clear(quoteBox);
+    clear(actionRow);
+    clear(messageBox);
+
+    const debt = borrowDebtWei();
+    const collateral = borrowCollateralWei();
+    const price = market.price;
+
+    const quote = troveQuote({
+      debtRequested: debt ?? 0n,
+      collateral: collateral ?? 0n,
+      price: price ?? 0n,
+      minNetDebt: market.minNetDebt,
+      mcr: market.mcr,
+      balance,
+    });
+
+    suggestButton.onclick = () => {
+      // Twice the 150% figure, for the same reason the prefill doubles it.
+      const target = quote.suggestedCollateral * 2n;
+      if (target <= 0n) return;
+      state.borrowCollateral = formatUnits(target, 18);
+      collateralInput.value = state.borrowCollateral;
+      renderBorrowQuote();
+    };
+
+    quoteBox.append(
+      el("dl", { class: "quote-list" }, [
+        el("dt", {}, ["You receive"]),
+        el("dd", { class: "mono" }, [`${formatAmount(debt ?? 0n, MUSD_DECIMALS, 2)} MUSD`]),
+        /* Said as its own line, because it is the number that surprises
+           people: the debt is larger than the borrow. 200 MUSD of it is the
+           protocol's liquidation gas reserve, which is held against the
+           position and returned when it closes, and the rest is the issuance
+           fee. Neither reaches the wallet. */
+        el("dt", {}, ["Your debt becomes"]),
+        el("dd", { class: "mono" }, [`≈ ${formatAmount(quote.estimatedDebt, MUSD_DECIMALS, 2)} MUSD`]),
+        el("dt", {}, ["Collateral value"]),
+        el("dd", { class: "mono" }, [`${formatAmount(quote.collateralValue, MUSD_DECIMALS, 2)} MUSD`]),
+        el("dt", {}, ["Collateral ratio"]),
+        el("dd", { class: "mono" }, [formatIcr(quote.icr)]),
+      ]),
+      el("p", { class: "muted small" }, [
+        `The debt is more than you receive: ${GAS_COMPENSATION / 10n ** 18n} MUSD of it is the protocol's liquidation reserve, held against the position and returned when it closes, plus an issuance fee of up to ${Number(FEE_MARGIN_BPS) / 100}%. Mezo's contracts publish no fee getter, so this page over-states the fee rather than under-stating the collateral you need.`,
+      ]),
+    );
+
+    if (price !== null) {
+      quoteBox.append(
+        el("p", { class: "muted small" }, [
+          `At Mezo's testnet price of ${formatAmount(price, MUSD_DECIMALS, 0)} MUSD per ${mezoTestnet.nativeCurrency.symbol}, this borrow needs at least ${formatAmount(quote.minimumCollateral, 18, 8)} to be accepted and ${formatAmount(quote.suggestedCollateral, 18, 8)} to sit at the 150% this page asks for. The testnet price is not the real bitcoin price.`,
+        ]),
+      );
+    }
+
+    if (quote.blocker) {
+      quoteBox.append(notice("warning", quote.blocker));
+    }
+
+    const primary = actionButton({
+      label: `Lock ${formatAmount(collateral ?? 0n, 18, 8)} ${mezoTestnet.nativeCurrency.symbol} and borrow ${formatAmount(debt ?? 0n, MUSD_DECIMALS, 0)} MUSD`,
+      pendingLabel: "Opening the position…",
+      onClick: async () => {
+        if (!connection || debt === null || collateral === null) return;
+        state.borrowMessage = null;
+        try {
+          const wallet = walletClientFor(connection.provider, connection.address);
+          const hash = await writeContract(wallet, {
+            address: CONFIG.borrowerOperations as Address,
+            abi: BORROWER_OPERATIONS_ABI,
+            functionName: "openTrove",
+            // Zero hints: correct at any list length, and merely costs gas.
+            // See mezoBorrow.ts for why this signature and not Liquity's.
+            args: [debt, ZERO_ADDRESS, ZERO_ADDRESS],
+            value: collateral,
+          });
+          state.borrowMessage = { kind: "ok", text: "Sent. Waiting for the position to open…" };
+          renderBorrowQuote();
+          await sendAndWait(hash);
+          await refreshChain();
+          state.borrowMessage = {
+            kind: "ok",
+            text: "Borrowed. The MUSD is in your wallet and the next step is below.",
+          };
+        } catch (error) {
+          const explained = describeError(error);
+          state.borrowMessage = { kind: "error", text: explained.message, name: explained.name };
+        } finally {
+          renderAll();
+        }
+      },
+    });
+    primary.setBlocked(quote.blocker);
+    actionRow.append(primary.element);
+
+    /* The warning sits under the button rather than above the quote, because
+       it has to be the last thing read before the click. It is not a
+       disclaimer: an unrepaid trove on testnet costs nothing, and the habit
+       of reading this sentence before signing it is the whole point. */
+    messageBox.append(
+      el("p", { class: "muted small" }, [
+        "This opens a debt position in Mezo's borrow market, not ours. Your ",
+        mezoTestnet.nativeCurrency.symbol,
+        " is locked until the debt is repaid, one address can hold one position, and if the collateral ratio falls below 110% the position can be liquidated. Testnet funds only.",
+      ]),
+    );
+    if (state.borrowMessage) {
+      messageBox.append(notice(state.borrowMessage.kind, state.borrowMessage.text, state.borrowMessage.name));
+    }
+  }
+
+  renderBorrowQuote();
 }
 
 /* ------------------------------------------------------------------ faucet */

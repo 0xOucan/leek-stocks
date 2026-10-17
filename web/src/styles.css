@@ -694,3 +694,167 @@ h3 {
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
+
+/* --------------------------------------------------------- the step list --
+ *
+ * The onboarding panel. It is the first thing on the page for a visitor who
+ * has nothing, and it has to disappear into the background for one who has
+ * everything, so the completed state is quiet rather than celebratory: a
+ * check, muted text, and no colour.
+ */
+
+.panel-start {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+/* Focus lands here from the stepper's own buttons; see goToSection. */
+.panel:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 4px;
+}
+
+.start-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.start-head h2 {
+  margin: 0;
+}
+.start-progress {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.95rem;
+  /* tabular-nums comes from .mono; this keeps "1 / 5" from reflowing the
+     header each time a step completes. */
+  font-variant-numeric: tabular-nums;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.step {
+  display: grid;
+  /* A fixed marker column, so every title starts at the same x no matter
+     whether its marker is a digit or a check. */
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  padding: 12px 0;
+  position: relative;
+}
+/* The connecting rail, drawn behind the markers rather than as a border on
+   the row: a border would stop at the last step's edge and leave a stub
+   hanging below the final marker. */
+.step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 34px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--color-border);
+}
+
+.step-marker {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+  /* Above the rail. */
+  position: relative;
+  z-index: 1;
+}
+.step-marker .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.step-title {
+  margin: 0;
+  font-weight: 600;
+}
+.step-body p {
+  margin: 0;
+  max-width: 62ch;
+}
+.step-body .button,
+.step-body a.button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+/* Done: quiet. The check and the muted text carry it, and the row recedes. */
+.step.is-done .step-marker {
+  border-color: var(--color-gain);
+  color: var(--color-gain);
+  background: transparent;
+}
+.step.is-done .step-title {
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+}
+
+/* Current: the only row with any emphasis on the page. */
+.step.is-current .step-marker {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+.step.is-current .step-title {
+  color: var(--color-foreground);
+}
+
+/* To do: present, legible, and clearly not actionable yet. */
+.step.is-todo .step-title,
+.step.is-todo .step-body p {
+  color: var(--color-muted-foreground);
+}
+
+/* Two inputs side by side on a wide screen, stacked on a phone. Used by the
+   borrow form, where the debt and the collateral are one decision and reading
+   them as one row is the point. */
+.field-pair {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: 1fr;
+}
+@media (min-width: 640px) {
+  .field-pair {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* An external link that has to read as a button. `a.button` rather than a
+   button that opens a window: it is a navigation, it should middle-click and
+   it should show its target in the status bar. */
+a.button {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+a.button .icon {
+  width: 15px;
+  height: 15px;
+}

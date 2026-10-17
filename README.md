@@ -25,17 +25,53 @@ both keys and what each can do are in [ADDRESSES.md](ADDRESSES.md).
 | Contracts | **deployed and verified** on Mezo testnet; three verified on the explorer, all seven against the source (`./scripts/verify-bytecode.sh`) |
 | Roles | split: a publisher key that can only publish, a deployer key that can do everything but publish |
 | Price feed | runs; rehearsed against the live oracles; **not yet on the VPS** |
-| Front end | builds and works against a local chain; **not yet deployed** |
+| Front end | **points at Mezo testnet**; a full buy -> redeem round trip completed on chain; onboarding, the faucet link and native borrowing are in the page; **not yet deployed to the VPS** |
 | Leeknding (lending) | written, 95 tests, 8 invariants, **not deployed** — `leek-lend` |
 | Air-gapped signing | the wallet draws Mezo transactions in BTC; the filmed demo is owed |
+
+## The flow a tester follows
+
+All of it from the page, with no scripts and nothing from me. The front end
+works out which step the wallet is on from chain state and offers only that
+one, so arriving half-way through — which is every reload — lands in the right
+place.
+
+1. **Connect a wallet.** EIP-6963 or WalletConnect.
+2. **Switch to Mezo Testnet.** The button adds the chain if the wallet does
+   not have it.
+3. **Claim test BTC** from [faucet.test.mezo.org](https://faucet.test.mezo.org).
+   Gas on Mezo is BTC, not ether, and the same BTC is the collateral for the
+   next step. The faucet is a hosted form with a captcha, so the page links to
+   it rather than pretending to call it.
+4. **Borrow MUSD against that BTC**, in the page, through Mezo's own
+   `BorrowerOperations`. We mint no MUSD and this is not our market: it is a
+   loan, the BTC is locked until it is repaid, and the page says so above and
+   below the button. The minimum is 1800 MUSD, the protocol's own
+   `minNetDebt`, and the debt comes out 200 MUSD higher than the borrow
+   because of the liquidation gas reserve — which the quote states as its own
+   line, because it is the number that surprises people.
+5. **Approve, then buy** index shares.
+6. **Redeem** back to MUSD whenever, at the oracle price, less the same fee.
+
+The collateral ratio the page will open is **150%**, not the protocol's 110%
+minimum: a position opened at exactly MCR is liquidatable on the next tick of
+the price feed. `web/src/lib/borrow.ts` holds that arithmetic and
+`web/test/borrow.test.ts` checks it against a `getCurrentICR` reading taken
+from the live chain.
 
 ## What this is, plainly
 
 - **Parody indices.** `Gologgle`, `Amezon`. They are **not** tokenised shares
   of any real company, they are **not** backed by anything, and they track an
   index this project's own oracle publishes. Testnet only.
-- **MUSD settlement.** Shares are priced and bought in MUSD, the real one at
-  `0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503` on Mezo testnet.
+- **MUSD settlement.** Shares are priced and bought in MUSD, at
+  `0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af` on Mezo testnet. Mezo testnet
+  has **two** contracts reporting MUSD with 18 decimals; this is the one
+  `BorrowerOperations` can mint, which makes it the only one a user can
+  actually obtain by borrowing against BTC. This file named the other one
+  until 2026-10-17 — see ADDRESSES.md for the `mintList` evidence, and read
+  it from the vault (`cast call <vault> "musd()(address)"`) rather than from
+  any document, including this one.
 - **An oracle whose trust model is written down**, below, rather than implied.
 
 ## Trust model
@@ -145,7 +181,7 @@ of them puts a key or a password on a command line.
 | `grant-publisher.sh` | grants `PUBLISHER_ROLE` to a dedicated key and revokes it from the deployer, confirming by reading `hasRole` |
 | `sweep-publisher.sh` | sends all but a gas float from the publisher back to the deployer |
 | `feed-env.sh` | writes `feed/.env` with the publisher's key taken out of the keystore and never shown |
-| `borrow-musd.sh` | opens a trove on Mezo's native borrow system, so there is MUSD to buy shares with |
+| `borrow-musd.sh` | opens a trove on Mezo's native borrow system, so there is MUSD to buy shares with (the dapp now does this too, from the page) |
 | `fund-backstop.sh` | donates MUSD to a vault's reserves to cover the H-1 shortfall, so every share can be redeemed |
 
 ## What Mezo does differently, and what it cost to find out

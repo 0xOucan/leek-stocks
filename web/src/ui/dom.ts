@@ -195,3 +195,47 @@ export function stat(label: string, value: string, extra?: string, sub?: string)
   if (sub !== undefined) children.push(el("span", { class: "stat-sub muted small" }, [sub]));
   return el("div", { class: "stat" }, children);
 }
+
+/**
+ * Run a re-render without stealing the caret.
+ *
+ * Every section here rebuilds its own subtree, which is cheap and keeps the
+ * render functions trivial - but a poll that fires while someone is typing
+ * replaces the input element under them. The text survives, because it is
+ * read back out of state, and the focus and the cursor position do not: the
+ * caret jumps to the end, or out of the field entirely, every five seconds.
+ * On a form where the amount is the whole decision, that is the difference
+ * between a page that feels alive and one that fights you.
+ *
+ * So: remember which field had focus and where its cursor was, by `id`
+ * because the element itself is about to be discarded, and put both back
+ * afterwards. Restored only if the field still exists and the user has not
+ * moved on in the meantime - re-focusing a field someone has deliberately
+ * left would be the same rudeness in the other direction.
+ */
+export function preservingFocus(render: () => void): void {
+  const active = document.activeElement;
+  const isField = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+  const id = isField ? active.id : "";
+  const start = isField ? active.selectionStart : null;
+  const end = isField ? active.selectionEnd : null;
+
+  render();
+
+  if (!isField || id === "") return;
+  // Already elsewhere: the render did not take the focus, so nothing to give
+  // back. Happens when a click moved focus to a button mid-poll.
+  if (document.activeElement !== document.body && document.activeElement !== null) return;
+
+  const restored = document.getElementById(id);
+  if (!(restored instanceof HTMLInputElement || restored instanceof HTMLTextAreaElement)) return;
+  restored.focus({ preventScroll: true });
+  if (start !== null && end !== null) {
+    try {
+      restored.setSelectionRange(start, end);
+    } catch {
+      // Some input types refuse a selection range (number, email). The focus
+      // is the part that matters; the caret lands at the end.
+    }
+  }
+}
