@@ -1016,20 +1016,40 @@ function renderSolvencyPanel(chain: MarketState): void {
   const fees = feeView(chain.feeBps, chain.reserveShareBps, chain.reserves, chain.liabilities);
   const view = chain.liabilities !== null ? solvency(chain.reserves, chain.liabilities) : null;
 
+  // Three states, not two. A null coverageBps means either that the price
+  // could not be read - liabilities() calls price() - or that nothing is
+  // owed, because `solvency` guards the division by zero. Those are opposite
+  // situations: one is a broken read, the other is a healthy empty vault.
+  // Collapsing them printed "the price is unreadable" on a vault whose price
+  // read perfectly well, which is the worst kind of wrong message: it reports
+  // a fault that does not exist and hides that the vault is simply new.
+  const unreadable = chain.liabilities === null;
+  const noShares = chain.liabilities === 0n;
+
   const rows: HTMLElement[] = [
     stat(
       "Backing",
-      view?.coverageBps != null ? `${(view.coverageBps / 100).toFixed(2)}%` : "unknown",
+      view?.coverageBps != null
+        ? `${(view.coverageBps / 100).toFixed(2)}%`
+        : unreadable
+          ? "unknown"
+          : "no shares yet",
       undefined,
       view?.coverageBps != null
         ? `${formatAmount(chain.reserves, MUSD_DECIMALS, 2)} MUSD held against ${formatAmount(chain.liabilities ?? 0n, MUSD_DECIMALS, 2)} owed`
-        : "the price is unreadable, so what the vault owes is unknown",
+        : unreadable
+          ? "the price is unreadable, so what the vault owes is unknown"
+          : "no shares have been issued, so the vault owes nothing and there is nothing to cover",
     ),
     stat(
       view?.short ? "Shortfall" : "Reserve surplus",
       `${formatAmount(view?.short ? view.shortfall : fees.surplus, MUSD_DECIMALS, 4)} MUSD`,
       undefined,
-      view?.short ? "redemption reverts until someone funds the backstop" : "a buffer against a rising index, not payable to holders",
+      view?.short
+        ? "redemption reverts until someone funds the backstop"
+        : noShares
+          ? "nothing is owed yet; this becomes a buffer once shares are issued"
+          : "a buffer against a rising index, not payable to holders",
     ),
     stat(
       "Protocol revenue",

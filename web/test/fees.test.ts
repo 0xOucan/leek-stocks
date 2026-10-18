@@ -123,3 +123,31 @@ test("no real company name reaches the dapp", () => {
     assert.ok(!text.includes(company), `${company} appears in the dapp`);
   }
 });
+
+/*
+ * A new vault is not a broken one.
+ *
+ * `solvency` returns a null coverageBps for two opposite reasons: the price
+ * could not be read, so liabilities() reverted and nothing is known, or
+ * nothing is owed, so the ratio has no denominator. The panel had one message
+ * for both and printed "the price is unreadable" against the freshly deployed
+ * Mezo vaults, whose prices read perfectly well. The reader was told the site
+ * was broken when the vault was merely empty.
+ */
+test("zero liabilities and an unreadable price are different states", () => {
+  const empty = solvency(0n, 0n);
+  assert.equal(empty.coverageBps, null, "no denominator, so no ratio");
+  assert.equal(empty.short, false, "a vault owing nothing is not short");
+  assert.equal(empty.shortfall, 0n);
+});
+
+test("the panel does not blame the price for an empty vault", () => {
+  const source = readFileSync(new URL("../src/app.ts", import.meta.url), "utf8");
+  // The distinguishing read is on liabilities, not on coverageBps: only the
+  // former tells the two cases apart.
+  assert.match(source, /const unreadable = chain\.liabilities === null;/);
+  assert.match(source, /const noShares = chain\.liabilities === 0n;/);
+  assert.match(source, /no shares yet/);
+  // And the unreadable-price copy must still exist for the case it describes.
+  assert.match(source, /the price is unreadable, so what the vault owes is unknown/);
+});
