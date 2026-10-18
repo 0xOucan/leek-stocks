@@ -322,6 +322,14 @@ export function mount(): void {
       el("p", {}, [
         "A share is priced from an index the vault does not hold, so the MUSD paid in by buyers can be less than the MUSD owed to redeemers. Redemption reverts when reserves are short rather than paying part of it. See audit finding H-1.",
       ]),
+      /* Said here rather than only in the README, because this is the page
+         somebody reads before they buy. The names invite exactly the wrong
+         assumption, and an index that looks like a stock index while tracking
+         a crypto basket has to say which it is at the point of sale. */
+      el("p", { class: "muted small" }, [
+        el("strong", {}, ["These are not stocks."]),
+        " GOLOGGLE and AMEZON are parodies, and they track baskets of cryptoassets priced from CoinGecko \u2014 ethereum, chainlink and filecoin for one, solana, avalanche and uniswap for the other. Neither contains, references or derives from any company\u2019s shares, and neither is a security.",
+      ]),
       el("p", {}, [
         // Named rather than linked: the lending market is not deployed, and a
         // navigation item that leads nowhere is worse than a sentence saying so.

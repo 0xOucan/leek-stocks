@@ -194,6 +194,105 @@ routing it to stakers gives a rate that divides MUSD actually distributed by
 MEZO actually staked. Both terms are on chain and both are checkable. That
 work is tracked separately; nothing in this repo pays yield today.
 
+## Mezo testnet has two MUSD contracts, and the ecosystem is split
+
+This cost real time to find and it changes what a project built here has to
+check, so it is written down rather than left in a commit message.
+
+Two contracts on Mezo testnet are called `MUSD`, both report 18 decimals, and
+they are not interchangeable:
+
+| Address | `mintList(BorrowerOperations)` | Who uses it |
+|---|---|---|
+| `0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af` | **true** | `BorrowerOperations` mints it, so this is the MUSD a user gets by borrowing. **What this project settles in.** |
+| `0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503` | **false** | the official MUSD/BTC pool on Mezo's own DEX, and the address Mezo's public docs give for testnet MUSD |
+
+Three more contracts on the chain also report MUSD with 18 decimals and also
+return false; all four are listed in
+[web/scripts/check-bundle.mjs](web/scripts/check-bundle.mjs), which fails the
+build if any of them reaches a bundle.
+
+The consequence is not theoretical. Mezo's own getting-started guidance says
+to obtain testnet MUSD by swapping BTC in the dApp, and that swap goes through
+the MUSD/BTC pool - which holds the *second* token. A tester who follows those
+instructions ends up holding MUSD that `BorrowerOperations` never minted, that
+no vault here accepts, and that cannot be used to repay a trove. The balance
+looks right, the symbol looks right, and every transaction reverts.
+
+So: **on Mezo testnet, resolve MUSD by `mintList(BorrowerOperations)`, not by
+symbol and not from the docs.** Every vault here reads its settlement token
+back with `musd()` and the dapp compares that against the borrow market's own
+`musd()` on every poll, surfacing a mismatch rather than letting someone
+approve a token the vault will reject.
+
+This has been reported to the Mezo team. It is a testnet-only split; mainnet
+has one MUSD.
+
+## Listing shares on Mezo's own DEX
+
+Mezo runs an Aerodrome-style AMM ("Mezo Pools") with basic and concentrated
+pools, and it is deployed on testnet - at different addresses from the mainnet
+ones in the same documentation table, which is worth reading carefully before
+pointing a script at either.
+
+`PoolFactory.createPool` is permissionless, so an index share can be paired
+with the **borrowable** MUSD above and traded on infrastructure Mezo already
+operates. That is composition with a live protocol rather than another
+contract of ours, and it makes a share tradeable without touching the vault.
+
+| Mezo testnet | Address |
+|---|---|
+| Router | `0x9a1ff7FE3a0F69959A3fBa1F1e5ee18e1A9CD7E9` |
+| PoolFactory | `0x4947243CC818b627A5D06d14C4eCe7398A23Ce1A` |
+| CL Factory | `0x7B61BC8Aa460476d142F1CD107A47297002f69ff` |
+| NonfungiblePositionManager | `0x9B753e11bFEd0D88F6e1D2777E3c7dac42F96062` |
+
+`scripts/create-pool.sh` lists a pair and `scripts/verify-pool.sh` checks the
+result. Three things the scripts refuse to do, each because the failure is
+silent otherwise:
+
+- **Pair against an MUSD nobody can borrow.** It reads
+  `mintList(BorrowerOperations)` and stops if it is false.
+- **Seed at a price nobody chose.** The first deposit *is* the pool's price.
+  A basic pool carries no oracle and a testnet has no arbitrage, so a lopsided
+  first deposit is never corrected - it becomes the price and whoever trades
+  next absorbs it. The script quotes the vault, derives the matching MUSD, and
+  refuses if the router's own quote differs by more than a tolerance.
+- **Trust a receipt.** `cast send` cannot confirm anything on Mezo, so
+  `verify-pool.sh` reads the resulting state: that the factory and the router
+  agree on the address, that neither side is empty, and that the pool's price
+  is still within 300 bps of the oracle.
+
+### What this does not get us yet
+
+Gauges and MEZO emissions need **both** tokens whitelisted in `PoolsVoter`,
+and only Mezo's own assets are. An index share is not, so a share pool cannot
+receive emissions without Mezo whitelisting it. The pool is real and tradeable;
+the emissions are not available to it today, and claiming otherwise would be
+describing someone else's governance decision as a feature of this project.
+
+## The indices track crypto baskets, not equities
+
+Deliberately, and this is a product boundary rather than a limitation.
+
+The names are parodies - GOLOGGLE, AMEZON - and the constituents are
+**cryptoassets** priced from CoinGecko. GOLOGGLE is ethereum, chainlink and
+filecoin; AMEZON is solana, avalanche and uniswap. Neither basket contains,
+references or derives from any company's shares.
+
+A token that tracked a real company's share price would be a synthetic equity
+derivative. It would contradict the `DISCLAIMER` constant compiled into
+[ETFShare](src/ETFShare.sol) - *"Not a security. Not backed by any real asset
+or company"* - which travels with the token precisely so a front end cannot
+separate the claim from it. The parody name would make that worse rather than
+better: a real securities exposure wearing a joke label.
+
+There is also no honest data source for it. No free, keyless, real-time equity
+API exists; the keyless options refresh weekly or lag fifteen minutes, and
+CoinGecko covers cryptoassets, not equities. An index is only as good as the
+feed behind it, and a fifteen-minute-old price on a 0.5% fee is a worse
+product than a real-time one on a basket nobody is pretending is Alphabet.
+
 ## Front end
 
 [web/](web/) is the dapp: prices, buy and redeem, and the vault's reserves
@@ -252,6 +351,8 @@ of them puts a key or a password on a command line.
 | `feed-env.sh` | writes `feed/.env` with the publisher's key taken out of the keystore and never shown |
 | `borrow-musd.sh` | opens a trove on Mezo's native borrow system, so there is MUSD to buy shares with (the dapp now does this too, from the page) |
 | `fund-backstop.sh` | donates MUSD to a vault's reserves to cover the H-1 shortfall, so every share can be redeemed |
+| `create-pool.sh` | lists an index share against borrowable MUSD on Mezo's own DEX. Dry run by default; refuses an unborrowable MUSD, a ratio that disagrees with the oracle, and `FROM` with `--execute` |
+| `verify-pool.sh` | reads a listed pool back: factory and router agree, neither side empty, price within 300 bps of the oracle. The only honest confirmation on a chain whose receipts lag |
 
 ## What Mezo does differently, and what it cost to find out
 

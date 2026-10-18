@@ -97,3 +97,29 @@ test("the dapp states that a share pays no income", () => {
     );
   }
 });
+
+/*
+ * The equities boundary, guarded.
+ *
+ * The index names invite the assumption that these track company shares. They
+ * do not, and a token that did would be a synthetic equity derivative
+ * contradicting the DISCLAIMER compiled into ETFShare. The claim has to be on
+ * the page somebody reads before buying, not only in the README.
+ */
+test("the dapp says these are not stocks", () => {
+  assert.ok(APP.includes("These are not stocks."));
+  // And names what they actually are, so the denial is informative.
+  for (const id of ["ethereum", "chainlink", "filecoin", "solana", "avalanche", "uniswap"]) {
+    assert.ok(APP.includes(id), `the constituent ${id} is not named on the page`);
+  }
+});
+
+test("no real company name reaches the dapp", () => {
+  // The parody names are the whole point: a real one would make the token a
+  // claim about a real issuer. Checked case-insensitively against the
+  // companies the parodies are closest to.
+  const text = APP.toLowerCase();
+  for (const company of ["alphabet", "amazon.com", "google", "nasdaq", "nyse"]) {
+    assert.ok(!text.includes(company), `${company} appears in the dapp`);
+  }
+});
