@@ -56,7 +56,17 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "== anvil on :8545 (chain $CHAIN_ID)"
-anvil --port 8545 --chain-id "$CHAIN_ID" --silent &
+# --block-time, so the local chain behaves like one that has validators.
+#
+# By default Anvil mines only when a transaction arrives, which freezes
+# block.timestamp whenever nothing is happening. The feed reads the chain's
+# clock to decide whether minRoundInterval has elapsed, so on an idle default
+# Anvil it held at "1s since the last round" forever and the rehearsal never
+# produced a second round - a bug in the rehearsal, not in the feed, but one
+# that hid a real question about which clock to trust. Two seconds is fast
+# enough not to slow a click-through and slow enough to be nothing like a
+# burst.
+anvil --port 8545 --chain-id "$CHAIN_ID" --block-time 2 --silent &
 PIDS+=($!)
 for _ in $(seq 1 50); do
   cast chain-id --rpc-url "$RPC" >/dev/null 2>&1 && break

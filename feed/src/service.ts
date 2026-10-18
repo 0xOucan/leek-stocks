@@ -43,6 +43,39 @@ import {
 } from "./index-math.ts";
 import { fetchPrices, type SourceResult } from "./source.ts";
 
+/**
+ * How long the contract will think has passed, by the time our transaction
+ * is in a block.
+ *
+ * Neither clock alone is right, and both failures were seen within an hour of
+ * each other.
+ *
+ * `Date.now()` alone compares two unrelated clocks: the contract compares
+ * `block.timestamp` to `block.timestamp`, so all the skew between the host
+ * and the chain lands in our number, and it can go **negative** — a chain
+ * running ahead of the host made `secondsSinceLast < minRoundInterval` true
+ * forever and the feed stopped publishing while reporting a healthy hold.
+ *
+ * The latest block's timestamp alone is worse on an idle chain. Anvil mines
+ * only when there is a transaction, so with nothing happening the chain clock
+ * is **frozen**: the feed held at "1s since the last round" indefinitely and
+ * the local rehearsal never produced a second round. That is a dev-chain
+ * property rather than a Mezo one, but a rehearsal that cannot publish is a
+ * rehearsal that proves nothing.
+ *
+ * So: the larger of the two. The quantity actually wanted is the timestamp of
+ * the block that will *include* this publish, which is in the future relative
+ * to the latest block, and the maximum is the better predictor of it in both
+ * cases. The asymmetry also favours it — being too small means the feed holds
+ * and stops, being too large means at worst one publish reverts with
+ * `TooSoon` and the next tick corrects.
+ */
+export function elapsedSince(thenSeconds: number, latestBlockTimestamp: bigint): number {
+  const byChain = Number(latestBlockTimestamp) - thenSeconds;
+  const byWallClock = Math.floor(Date.now() / 1000) - thenSeconds;
+  return Math.max(0, byChain, byWallClock);
+}
+
 const ORACLE_ABI = [
   {
     type: "function",
@@ -365,18 +398,7 @@ export class FeedService {
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "anchorAnswer" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "anchorAt" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "paused" }),
-          /* The chain's own clock, not ours.
-           *
-           * `secondsSinceLast` used to be `Date.now()` minus an on-chain
-           * timestamp, which compares two unrelated clocks. The contract
-           * compares `block.timestamp` against `block.timestamp`, so any skew
-           * between the publisher's host and the chain lands entirely in our
-           * number - and it can go NEGATIVE, which a local run surfaced
-           * immediately: a chain running ahead of the host made
-           * `secondsSinceLast < minRoundInterval` true forever and the feed
-           * stopped publishing altogether, reporting a healthy hold. Reading
-           * the latest block costs one call and makes the comparison the same
-           * one the contract will make. */
+          // The chain's own clock, for elapsedSince() below.
           publicClient.getBlock({ blockTag: "latest" }),
           publicClient
             .readContract({ address: oracle, abi: ORACLE_ABI, functionName: "latestRoundData" })
@@ -398,8 +420,7 @@ export class FeedService {
         const decision = decidePublish({
           target: toFeedUnits(value, Number(decimals)),
           last,
-          secondsSinceLast:
-            updatedAt === null ? Number.MAX_SAFE_INTEGER : Math.max(0, Number(block.timestamp) - updatedAt),
+          secondsSinceLast: updatedAt === null ? Number.MAX_SAFE_INTEGER : elapsedSince(updatedAt, block.timestamp),
           thresholdBps: this.config.thresholdBps,
           heartbeatSeconds: this.config.heartbeatSeconds,
           maxDeviationBps: Number(maxDeviationBps),
@@ -409,7 +430,7 @@ export class FeedService {
           maxWindowDeviationBps: Number(maxWindowDeviationBps),
           // Off the chain's clock, like secondsSinceLast above and for the
           // same reason: the contract compares block.timestamp to anchorAt.
-          secondsSinceAnchor: Math.max(0, Number(block.timestamp) - Number(anchorAt as bigint)),
+          secondsSinceAnchor: elapsedSince(Number(anchorAt as bigint), block.timestamp),
           deviationWindow: Number(deviationWindow),
         });
         state.lastDecision = `${decision.publish ? "publish" : "hold"}: ${decision.reason} (${origin})`;

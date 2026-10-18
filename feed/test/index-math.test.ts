@@ -278,3 +278,26 @@ test("the window bound applies downward too", () => {
   });
   assert.equal(decision.answer, 8_000n, "a crash must walk down by the window budget, not the round bound");
 });
+
+test("elapsed time is the larger of the chain clock and the wall clock", async () => {
+  /* Both single-clock versions failed within an hour of each other.
+   *
+   * Date.now() alone can go negative against a chain running ahead, which
+   * made secondsSinceLast < minRoundInterval true forever and stopped the
+   * feed while it reported a healthy hold. The latest block's timestamp alone
+   * is frozen on an idle Anvil, which held the local rehearsal at "1s since
+   * the last round" indefinitely so a second round never happened.
+   *
+   * The quantity wanted is the timestamp of the block that will INCLUDE the
+   * publish, which is in the future relative to the latest block, and the
+   * maximum predicts it better in both cases. */
+  const { elapsedSince } = await import("../src/service.ts");
+  const now = Math.floor(Date.now() / 1000);
+
+  // A frozen chain clock must not win over a moving wall clock.
+  assert.equal(elapsedSince(now - 600, BigInt(now - 599)), 600);
+  // A chain ahead of the host must not produce a negative.
+  assert.equal(elapsedSince(now, BigInt(now + 300)), 300);
+  // Neither may ever be negative.
+  assert.equal(elapsedSince(now + 5_000, BigInt(now)), 0);
+});

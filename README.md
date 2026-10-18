@@ -97,10 +97,31 @@ damage one bad round can do:
 | Guard | Effect |
 |---|---|
 | `maxDeviationBps`, immutable | a push further than this from the last answer reverts |
+| `minRoundInterval`, immutable | 30s between rounds, so the per-round bound becomes a bound per unit of time rather than per transaction |
+| `maxWindowDeviationBps` over `deviationWindow`, both immutable | **total** movement from an anchor, 20% per hour. The per-round bound limits one step; this limits a sequence of them |
+| `MIN_ANSWER` and `MAX_ANSWER` | the answer range is bounded on both sides, so no mistyped value can brick the feed or pin it at dust |
 | `maxStaleness` | consumers must refuse an answer older than this; `updatedAt` is the publication time and no read touches it |
 | Positive-answer check | a zero or negative price is refused at publication |
 | Separated roles | publishing, pausing and administration are three roles; the publisher cannot pause and the guardian cannot publish |
 | Monotonic rounds | ids increase by one, and history is immutable once written |
+
+### Why the cumulative bound exists, with the numbers
+
+A per-round bound alone is a **ratchet**, and it is worth stating how fast it
+turns because that is what decides whether a guardian is real. At 20% a round
+and 30 seconds a round, a compromised publisher takes the price from 100 to
+over 200 in **four rounds — 120 seconds** — and every one of those publishes
+is individually legal, so there is no oversized step to catch.
+`maxStaleness` is an hour and gives no brake at all: nothing goes stale while
+the walk is happening, because the walk *is* fresh publishes.
+
+With the window bound, the same walk takes **11,010 seconds**, a little over
+three hours. That figure is measured by `test/Ratchet.t.sol` rather than
+reasoned about. The honest limit: the window is fixed rather than sliding, so
+the budget can be spent at the end of one window and the next budget
+immediately after it rolls — twice the budget in a short span, at a boundary,
+once, which is asserted directly in that test. Every step after costs a
+further window.
 
 The guardian should be a multisig, and the admin should not be the publisher.
 A single key that can freeze a feed is a censorship risk, and saying so is part

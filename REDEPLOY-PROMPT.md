@@ -1,5 +1,10 @@
 # Redeploy prompt for the infrastructure agent — LeekDefi, round 2
 
+**This file covers the hosting only.** The contracts are deployed separately,
+by the operator, following `RUNBOOK-REDEPLOY.md`; by the time you read this
+that has already happened and the new addresses are in the repository. If they
+are not, step 1 below tells you to stop.
+
 Hand this to the agent that operates `0xOucan/vpsinfra`. **`DEPLOY-BRIEF.md`
 beside this file is still the authority** on hostnames, ports, Cloudflare,
 registry entries, Caddy templates and the hard rules. This is the delta: what

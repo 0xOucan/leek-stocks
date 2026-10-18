@@ -82,7 +82,7 @@ fix solved the instance and not the class.
 | R4-3 | Medium | `guardian == treasurer` was documented but never enforced | **Fixed** |
 | R4-4 | Medium | One slow publish starved the other oracle for a whole tick | **Fixed** (feed) |
 | R4-5 | Low | The publisher did not know the oracle's cooldown existed | **Fixed** (feed) |
-| R4-6 | Medium | The oracle's bound is a ratchet: 2 minutes to double the price | **Open** |
+| R4-6 | **High** | The oracle's bound is a ratchet: 2 minutes to double the price | **Fixed** (window bound) |
 | R4-7 | Low | Phase two accepts any oracle address, and is not idempotent | **Open** |
 | R4-8 | Low | `ETFFactory.admin` is immutable while the admin role is transferable | **Open** |
 
@@ -741,25 +741,77 @@ error.
 a reason naming both numbers. A hold is not a failure and no longer reads as
 one.
 
-## R4-6 The oracle's deviation bound is a ratchet (open)
+## R4-6 The oracle's deviation bound was a ratchet
 
-**Severity**: Medium
+**Severity**: High — reclassified up from Medium on measuring it
 **Category**: oracles
-**Location**: `IndexOracle.publish`
+**Location**: `IndexOracle.publish`, `feed/src/index-math.ts`
 
 **Description**: The bound limits one step, not a sequence — M-1 restated with
 numbers now that `minRoundInterval` exists. At 2000 bps and a 30-second
-interval, a compromised publisher doubles the price in **four rounds, two
-minutes**. `maxStaleness` is an hour and gives a guardian no brake at all:
-nothing goes stale while the walk is happening, because the walk *is* fresh
-publishes.
+interval a compromised publisher doubles the price in **four rounds, 120
+seconds**, and every one of those publishes is individually legal. There is no
+single oversized step to catch. `maxStaleness` is an hour and gives a guardian
+no brake at all: nothing goes stale while the walk is happening, because the
+walk *is* fresh publishes.
 
-**Recommendation**: **open, and the most valuable remaining contract work.**
-It needs a cumulative time-windowed bound — total movement permitted per hour,
-not per round — which is real design rather than a line, and it is recorded
-here rather than shipped half-done. Until then the mitigation is the one M-1
-names: the publisher key is a separate account holding `PUBLISHER_ROLE` and
-nothing else, and the guardian can pause.
+It was filed Medium and left open on the argument that a cumulative bound is
+"real design rather than a line". Measuring how fast the ratchet actually
+turns is what moved it: 120 seconds is shorter than the time to notice an
+alert, so in practice the guardian's pause did not exist for this attack.
+
+**Recommendation**: **fixed.** A second bound, measured not from the previous
+answer but from an anchor that refreshes only once `deviationWindow` has
+elapsed. Inside a window the price may move `maxWindowDeviationBps` **in
+total**, however many in-bound rounds it takes. Deployed at 20% per hour, so
+one round may still use the whole budget — a genuine market gap gets through
+in one step — while a sequence of them cannot.
+
+The anchor refreshes lazily inside `publish` rather than needing to be
+advanced by a call, because a window that only moves when somebody remembers
+to move it is a window that stays open. It refreshes to the *previous*
+published answer, so the budget is spent relative to where the feed was when
+the window opened. `anchorAnswer` and `anchorAt` are public so an alert can be
+built on the remaining budget.
+
+**Checked after the per-round bound**, deliberately, for the same reason the
+interval is checked before it: a publish should fail for the most immediate
+reason. If one step is too large that is the fact worth reporting; only when
+every individual step is legal does "this window's budget is spent" become the
+real reason — and that is precisely the case this bound exists for.
+
+**Measured, not predicted.** `test/Ratchet.t.sol` walks the price as fast as
+the oracle permits and reports the wall clock: **11,010 seconds**, a little
+over three hours, against 120 seconds before. My first assertion in that test
+said *four* hours and failed at 3.06; the test now holds the bound to what it
+actually delivers and the comments that claimed four hours are corrected.
+Three other existing tests rejected themselves when this landed, which is the
+bound working — each walked the price over several rounds inside one hour.
+
+**The honest limit of this design.** The window is fixed rather than sliding,
+so the budget can be spent at the end of one window and the whole of the next
+budget immediately after it rolls: worst case is **twice the budget in a short
+span, at a boundary, once**. Every step after that costs a further window,
+which is why doubling still takes hours and why the figure is three rather
+than four. That worst case is asserted directly in
+`test_theWorstCaseAtAWindowBoundaryIsTwiceTheBudgetOnce` rather than left as a
+claim in a comment. A true sliding bound needs the answer from exactly
+`deviationWindow` ago, which means storing roughly 120 entries at a 30-second
+interval, and that cost is not worth buying the last factor of two.
+
+**Mirrored off chain**, because R4-5 is the same lesson: without it the
+service would send a perfectly in-bound step that the oracle rejects with
+`WindowDeviationTooLarge`, every tick, for the rest of the window — a
+self-inflicted error reading in `/prices` as an RPC fault. `decidePublish`
+clamps to whichever of the three bounds is tightest and names the one that
+bit, and it accounts for the lazy refresh: the budget available to the next
+publish is measured from `last` when the window is about to roll and from
+`anchorAnswer` when it is not.
+
+The constructor also rejects `deviationWindow <= minRoundInterval`, the
+configuration in which the window expires between rounds and bounds nothing —
+which would make this look implemented while doing nothing, and that is worse
+than not having it.
 
 ## R4-7 Phase two accepts any oracle address, and is not idempotent (open)
 
@@ -796,23 +848,34 @@ decision; it is a correctness trap for readers.
 
 ## Slither
 
-`slither . --filter-paths "lib|test"`, version 0.11.6, re-run after round 4 on
-33 contracts with 102 detectors: **33 results**.
+`slither . --filter-paths "lib|test"`, version 0.11.6, re-run after round 4
+on 33 contracts with 102 detectors: **0 High, 0 Medium, 14 Low, 7
+Informational**.
 
-**Correction.** An earlier version of this session's notes said slither
-"reports nothing above Low". That was wrong, and it stopped being true the
-moment `LeekStaking` entered the tree. The current counts by impact are:
+**Two corrections to earlier versions of this section.** The first said
+slither "reports nothing above Low", which was false from the moment
+`LeekStaking` entered the tree: it reported **2 High and 11 Medium**. The
+second said those were "every one accepted with a reason", which was true but
+left the reasons only here, in a document a reader of the code does not have
+open.
+
+They are now **suppressed at the source with the reason attached** — seven
+`slither-disable-next-line` directives, each preceded by the paragraphs below,
+in the file. This is deliberately not a `detectors_to_exclude` in a config
+file: a global exclude of `incorrect-equality` would hide the next genuine
+`balanceOf(x) == y` as well, and the point of the exercise is that a clean run
+means something.
 
 | Impact | Detector | Count | Action |
 |---|---|---|---|
-| High | `reentrancy-balance` | 2 | accepted, below |
-| Medium | `incorrect-equality` | 8 | accepted, below |
-| Medium | `reentrancy-no-eth` | 2 | accepted, below |
-| Medium | `divide-before-multiply` | 1 | accepted, below |
-| Low | `timestamp` | 8 | accepted (staleness and cooldowns are time comparisons) |
-| Low | `return-bomb` | 2 | accepted; the returndata is bounded by the decode, and the gas by the stipend |
+| High | `reentrancy-balance` | 2 | suppressed at the source, below |
+| Medium | `incorrect-equality` | 8 | suppressed at the source, below |
+| Medium | `reentrancy-no-eth` | 2 | suppressed at the source, below |
+| Medium | `divide-before-multiply` | 1 | suppressed at the source, below |
+| Low | `timestamp` | 8 | accepted (staleness, cooldowns and the deviation window are time comparisons) |
+| Low | `return-bomb` | 2 | accepted; the returndata is bounded by the decode and the gas by the stipend |
 | Low | `reentrancy-events`, `reentrancy-benign`, `missing-zero-check` | 4 | accepted |
-| Informational | `low-level-calls`, `missing-inheritance`, `naming-convention`, `unindexed-event-address` | 6 | accepted |
+| Informational | `low-level-calls`, `missing-inheritance`, `naming-convention`, `unindexed-event-address` | 7 | accepted |
 
 **The two High findings are both the balance-delta measurement pattern**, and
 both are there because of earlier findings in this report. `IssuanceVault.buy`
@@ -892,4 +955,4 @@ Round 1's six findings and their dispositions stand unchanged:
 | Every fix re-audited as new code | done from round 3 onward, and it is what found R3-1, R3-2, R4-1 and R4-2 |
 | Invariant handler reaches every function it claims to | done, after R3-1. A handler that silently cannot reach a shape removes it from the state space while the suite still reports green |
 | Verified source after deploy | pending deployment |
-| **Open findings accepted before deployment** | R4-6 (the ratchet), R4-7 (phase-two validation, unused by this deployment), R4-8 (`admin` field). None is a path to funds in a single-key testnet deployment; R4-6 is the one to close before anything else |
+| **Open findings accepted before deployment** | R4-7 (phase-two validation, unused by this deployment) and R4-8 (the `admin` field). Neither is a path to funds, and neither is reachable by this deployment's single-key path. **R4-6, the ratchet, is closed** — it was the one this row previously said to close before anything else |

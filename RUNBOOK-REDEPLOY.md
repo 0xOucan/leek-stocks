@@ -1,5 +1,17 @@
 # Runbook: redeploying LeekStonks on Mezo testnet
 
+**Yes — this is the document for achieving the deployment.** Two files, and
+they do different halves:
+
+| File | Who runs it | What it does |
+|---|---|---|
+| **this one** | you, locally | deploys the contracts to Mezo testnet, records the addresses, verifies them, funds the demo |
+| `REDEPLOY-PROMPT.md` | the VPS infra agent | redeploys the hosted dapp and price feed onto the new contracts |
+
+Step 4 below is where you hand the second file over. Neither replaces the
+other: the contracts are not on the VPS and the website is not on your
+machine.
+
 Every step in order, what it costs, and how to know it worked. Commands marked
 **[you]** need your keystore password and must be run by you, not by an agent.
 
