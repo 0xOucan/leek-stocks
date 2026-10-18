@@ -128,6 +128,10 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     event FeeSet(uint16 feeBps);
     event StakingSet(address staking);
     event RevenueRouted(uint256 amount);
+    /// @notice MUSD reached the staking contract but was not accounted there.
+    event RevenueStranded(uint256 amount);
+    /// @notice A staking read failed, so the trade charged the full fee.
+    event DiscountUnavailable();
     event ReserveShareSet(uint16 reserveShareBps);
     event ReservesTopped(uint256 amount, uint256 reservesAfter);
     event MaxSharesSet(uint256 maxShares);
@@ -138,6 +142,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     error ZeroAmount();
     error VaultPaused();
     error FeeTooHigh(uint16 feeBps);
+    error NotAContract(address target);
     error ShareTooHigh(uint16 reserveShareBps);
     error ShareAlreadySet();
     error CapExceeded(uint256 supplyAfter, uint256 cap);
@@ -277,8 +282,43 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      on any contract exposing three functions.
      */
     function setStaking(ILeekStaking next) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        /*
+         * A minimum of validation, which the previous version deliberately
+         * omitted on the argument that "a wrong address here would be caught
+         * by the first buy reverting". That was the bug, not the safeguard:
+         * the first buy reverting means every buy and every *redeem* reverts,
+         * so holders cannot exit, and the only remedy was this same admin
+         * function. An EOA or an undeployed address is the likely mistake, so
+         * it is rejected outright.
+         *
+         * This cannot validate behaviour, only existence - a chosen hostile
+         * contract is specified not to revert. The real protections are the
+         * try/catch on every call into it below, the independent discount
+         * clamp, and `emergencyUnsetStaking` for the guardian.
+         */
+        if (address(next) != address(0) && address(next).code.length == 0) revert NotAContract(address(next));
         staking = next;
         emit StakingSet(address(next));
+    }
+
+    /**
+     * @notice Detach the staking contract, restoring pre-staking behaviour.
+     *
+     * @dev The guardian's other power is `pause`, which stops trading. This
+     *      one restores it, and that asymmetry was the gap: a staking
+     *      contract that reverts froze buying and redeeming without ever
+     *      setting `paused`, so no Paused event fired, monitoring saw
+     *      nothing, and `unpause` did nothing. The only remedy lived with
+     *      DEFAULT_ADMIN_ROLE - which on a one-key deployment is the same
+     *      address whose mistake caused it.
+     *
+     *      Safe to hand to the guardian because unsetting cannot take value:
+     *      the treasury share simply accrues to `feesAccrued` again, where
+     *      only TREASURER_ROLE can reach it.
+     */
+    function emergencyUnsetStaking() external onlyRole(GUARDIAN_ROLE) {
+        staking = ILeekStaking(address(0));
+        emit StakingSet(address(0));
     }
 
     /**
@@ -297,7 +337,24 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         uint16 base = feeBps;
         if (address(staking) == address(0) || base == 0) return base;
 
-        uint16 discount = staking.discountBpsFor(account);
+        /*
+         * A discount that cannot be read is a discount nobody gets, not a
+         * trade nobody can make. Before this, a staking contract that
+         * reverted in this view took `buy` and `redeem` down with it and
+         * holders could not exit.
+         *
+         * try/catch covers a revert, a missing function and a bad return.
+         * It does not cover a callee that consumes all the gas it is given -
+         * nothing at this layer can, since Solidity forwards everything - so
+         * the address being a contract we deployed remains part of the trust
+         * model, and `emergencyUnsetStaking` is the escape.
+         */
+        uint16 discount;
+        try staking.discountBpsFor(account) returns (uint16 d) {
+            discount = d;
+        } catch {
+            return base;
+        }
         if (discount > MAX_DISCOUNT_BPS) discount = MAX_DISCOUNT_BPS;
         // Multiply before dividing; the result is at most `base`, so the
         // narrowing cast cannot truncate.
@@ -316,13 +373,70 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      */
     function _routeRevenue(uint256 amount) private {
         if (amount == 0) return;
-        if (address(staking) == address(0) || staking.totalSupply() == 0) {
+
+        ILeekStaking target = staking;
+        if (address(target) == address(0)) {
             feesAccrued += amount;
             return;
         }
-        musd.safeTransfer(address(staking), amount);
-        staking.notifyReward();
-        emit RevenueRouted(amount);
+
+        /*
+         * Every call into the staking contract is guarded, and every failure
+         * falls back to the behaviour this vault had before staking existed.
+         *
+         * Routing fee revenue is a nice-to-have; letting a holder redeem is
+         * not. Three of five audit domains independently found that this
+         * function could revert a trade - via a mis-pointed `setStaking`, via
+         * `NoStakers`, via `NothingToDistribute`, or via an unchecked
+         * subtraction inside `notifyReward` - and in every case the
+         * consequence was that nobody could exit the vault.
+         */
+        uint256 supply;
+        try target.totalSupply() returns (uint256 value) {
+            supply = value;
+        } catch {
+            feesAccrued += amount;
+            return;
+        }
+        // The empty-state decision: `notifyReward` refuses a distribution to
+        // a zero supply rather than stranding it or handing it to whoever
+        // stakes first, so an unstaked period leaves the fee as revenue here.
+        if (supply == 0) {
+            feesAccrued += amount;
+            return;
+        }
+
+        /*
+         * A raw `transfer` in a try/catch rather than SafeERC20, which is the
+         * one place in this contract that does not use it. SafeERC20's
+         * helpers are internal, so a revert inside `safeTransfer` cannot be
+         * caught, and catching it is the entire point here: MUSD is
+         * upgradeable and a blocklist on the staking address would otherwise
+         * halt every trade. The return value is checked explicitly, which is
+         * what SafeERC20 would have done.
+         */
+        bool moved;
+        try IERC20(address(musd)).transfer(address(target), amount) returns (bool ok) {
+            moved = ok;
+        } catch {
+            moved = false;
+        }
+        if (!moved) {
+            feesAccrued += amount;
+            return;
+        }
+
+        try target.notifyReward() {
+            emit RevenueRouted(amount);
+        } catch {
+            /* The MUSD has already left this contract, so it cannot be
+               credited to `feesAccrued` - that would count it twice. It is
+               not lost: it sits in the staking contract's balance and the
+               next successful distribution picks it up, because
+               `notifyReward` measures its own balance rather than trusting an
+               argument. Emitted so the gap is visible rather than silent. */
+            emit RevenueStranded(amount);
+        }
     }
 
     /* -------------------------------------------------------------- redeeming */
@@ -395,9 +509,21 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         bytes32 r,
         bytes32 s
     ) external returns (uint256 musdOut) {
-        // `permit` reverts on a bad signature, a used nonce or a passed
-        // deadline, so there is nothing to check here that it does not.
-        share.permit(msg.sender, address(this), shares, deadline, v, r, s);
+        /*
+         * A failed permit is not fatal, because the commonest cause is
+         * somebody else having already submitted it.
+         *
+         * `ETFShare.permit` is public, so anyone watching the mempool can
+         * lift (v, r, s) from a pending `redeemWithPermit` and submit the
+         * permit directly first. That consumes the nonce, and an
+         * unconditional call here then reverted the whole redemption - the
+         * user paid gas for nothing, while the allowance they needed had just
+         * been created for them. So: attempt it, and let `redeem` and
+         * `_spendAllowance` be the authority on whether the approval is
+         * actually there. If it is not, `burnFrom` reverts with the right
+         * error instead of a confusing nonce failure.
+         */
+        try share.permit(msg.sender, address(this), shares, deadline, v, r, s) {} catch {}
         return redeem(shares, minMusd);
     }
 

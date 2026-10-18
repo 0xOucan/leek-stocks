@@ -195,7 +195,6 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     error TooManyTiers(uint256 count);
     error DiscountTooHigh(uint16 discountBps);
     error TiersNotAscending(uint256 index);
-    error NothingToDistribute();
     error StillCooling(uint256 elapsed, uint256 required);
     error SameToken();
     error SelfTransfer();
@@ -310,10 +309,26 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     function notifyReward() public nonReentrant returns (uint256 distributed) {
         uint256 supply = totalSupply();
         if (supply == 0) revert NoStakers();
+        // NoStakers stays a revert rather than a silent no-op: it means the
+        // caller sent revenue that has nowhere to go, and the vault checks
+        // totalSupply() before routing precisely so it never reaches here.
 
         uint256 held = musd.balanceOf(address(this));
-        uint256 incoming = held - rewardsOwed;
-        if (incoming == 0) revert NothingToDistribute();
+        /*
+         * Saturating, not checked.
+         *
+         * `held >= rewardsOwed` holds only because `_payout` reduces
+         * `rewardsOwed` by exactly what it transfers, which assumes the MUSD
+         * balance falls by exactly that much. MUSD is upgradeable, so that is
+         * an assumption about future bytecode: a transfer fee, a claw-back or
+         * a seizure makes `held` smaller than `rewardsOwed` once, and a
+         * checked subtraction then reverts here forever - and because the
+         * vault calls this on every trade, that bricked buying and redeeming
+         * for everyone. Returning zero degrades instead, and the vault's
+         * try/catch is the second line.
+         */
+        uint256 incoming = held > rewardsOwed ? held - rewardsOwed : 0;
+        if (incoming == 0) return 0;
 
         // Multiply before dividing: the division is where a small reward
         // against a large stake disappears.

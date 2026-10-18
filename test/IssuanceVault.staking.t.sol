@@ -299,6 +299,108 @@ contract IssuanceVaultStakingTest is Test {
         assertLe(effective, FEE_BPS);
         assertGe(effective, FEE_BPS / 2, "a fee below half the base starves the reserve top-up");
     }
+
+    /* ------------------------------------------- the reward path is optional */
+
+    function test_aRevertingStakingContractDoesNotStopTrading() public {
+        // The finding three audit domains found independently: routing fee
+        // revenue is a nice-to-have, letting a holder exit is not.
+        HostileStaking hostile = new HostileStaking();
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(hostile)));
+
+        // Buying works, at the full fee, and the revenue falls back to the
+        // treasury rather than disappearing.
+        assertEq(vault.effectiveFeeBps(alice), FEE_BPS, "a failed discount read should charge full fee");
+        vm.prank(alice);
+        uint256 shares = vault.buy(1_000e18, 0);
+        assertGt(shares, 0);
+        assertEq(vault.feesAccrued(), 2.5e18, "the fee was lost rather than accrued");
+
+        // And redeeming works, which is the part that matters.
+        vm.startPrank(alice);
+        share.approve(address(vault), shares);
+        uint256 out = vault.redeem(shares, 0);
+        vm.stopPrank();
+        assertGt(out, 0, "a holder could not exit");
+    }
+
+    function test_stakingPointedAtAnEoaIsRefusedOutright() public {
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IssuanceVault.NotAContract.selector, alice));
+        vault.setStaking(ILeekStaking(alice));
+    }
+
+    function test_theGuardianCanRestoreTradingNotOnlyStopIt() public {
+        HostileStaking hostile = new HostileStaking();
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(hostile)));
+
+        // The asymmetry this fixes: a reverting staking contract froze trades
+        // without ever setting `paused`, so no Paused event fired and
+        // `unpause` did nothing. The only remedy lived with the admin - the
+        // same key whose mistake caused it on a one-key deployment.
+        vm.prank(guardian);
+        vault.emergencyUnsetStaking();
+        assertEq(address(vault.staking()), address(0));
+
+        vm.prank(alice);
+        vault.buy(1_000e18, 0);
+        assertEq(vault.feesAccrued(), 2.5e18);
+    }
+
+    function test_onlyTheGuardianCanUnwire() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.emergencyUnsetStaking();
+    }
+
+    function test_revenueThatCannotBeAccountedIsStrandedNotDoubleCounted() public {
+        // A staking contract that accepts the MUSD but fails to account it.
+        HalfHostileStaking half = new HalfHostileStaking();
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(half)));
+
+        vm.prank(alice);
+        vault.buy(1_000e18, 0);
+
+        // The MUSD left the vault, so crediting feesAccrued too would count
+        // it twice. It is at the staking contract and the next successful
+        // distribution picks it up, because notifyReward measures its own
+        // balance rather than trusting an argument.
+        assertEq(vault.feesAccrued(), 0);
+        assertEq(musd.balanceOf(address(half)), 2.5e18);
+    }
+}
+
+/// Reverts on every call the vault makes into it.
+contract HostileStaking {
+    function discountBpsFor(address) external pure returns (uint16) {
+        revert("no");
+    }
+
+    function totalSupply() external pure returns (uint256) {
+        revert("no");
+    }
+
+    function notifyReward() external pure returns (uint256) {
+        revert("no");
+    }
+}
+
+/// Accepts MUSD and claims stakers exist, but cannot account for it.
+contract HalfHostileStaking {
+    function discountBpsFor(address) external pure returns (uint16) {
+        return 0;
+    }
+
+    function totalSupply() external pure returns (uint256) {
+        return 1;
+    }
+
+    function notifyReward() external pure returns (uint256) {
+        revert("cannot account");
+    }
 }
 
 /// A staking contract that ignores its own discount cap.

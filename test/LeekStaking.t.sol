@@ -203,10 +203,17 @@ contract LeekStakingTest is Test {
         assertEq(staking.pending(alice), 0, "a stake alone must not credit anything");
     }
 
-    function test_distributingNothingReverts() public {
+    function test_distributingNothingIsANoOpRatherThanARevert() public {
+        /* It used to revert. A revert here is fine on its own, but the vault
+           calls notifyReward on every trade, so any revert in this function
+           is a revert in buy() and redeem() - and the one that mattered was
+           the unchecked `held - rewardsOwed`, which an upgraded MUSD could
+           make permanent. Both are no-ops now, and the vault additionally
+           wraps the call. */
         _stake(alice, 100 * ONE);
-        vm.expectRevert(LeekStaking.NothingToDistribute.selector);
-        staking.notifyReward();
+        assertEq(staking.notifyReward(), 0);
+        assertEq(staking.accMusdPerShare(), 0);
+        assertEq(staking.pending(alice), 0);
     }
 
     /* ----------------------------------------------------------- rounding */
