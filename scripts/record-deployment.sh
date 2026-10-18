@@ -132,16 +132,58 @@ OLD_SHARE_A=$(grep -oE 'ARG VITE_SHARE_AMEZON="0x[0-9a-fA-F]{40}' web/deploy/Doc
 # are what goes in the feed's secrets file, so they are substituted too.
 OLD_ORACLE_G=$(grep -E '^\| `IndexOracle` GOLOGGLE' ADDRESSES.md | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
 OLD_ORACLE_A=$(grep -E '^\| `IndexOracle` AMEZON' ADDRESSES.md | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
+OLD_FACTORY=$(grep -E '^\| `ETFFactory`' ADDRESSES.md | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
 
-for f in web/deploy/Dockerfile web/scripts/check-bundle.mjs ADDRESSES.md README.md DEPLOY-BRIEF.md DEPLOYMENT.md; do
+# Every tracked text file, not a list.
+#
+# The list this replaced named six files. The old addresses were in eleven -
+# including grant-publisher.sh, create-pool.sh, buy-shares.sh,
+# fund-backstop.sh, verify-pool.sh, verify-bytecode.sh and feed-env.sh, which
+# are the scripts you run immediately AFTER a redeploy. Each would have gone
+# on pointing at the previous deployment, whose contracts still exist and
+# still answer, so nothing would have errored: grant-publisher.sh would have
+# granted PUBLISHER_ROLE on a dead oracle and reported success. A list of
+# files is exactly the thing that goes stale, so this walks the tree.
+mapfile -t FILES < <(git ls-files -- '*.sh' '*.md' '*.mjs' '*.ts' '*.sol' 'Dockerfile' '*/Dockerfile' \
+  | grep -v '^audit/' || true)
+echo "   scanning ${#FILES[@]} tracked files"
+for f in "${FILES[@]}"; do
   [[ -f "$f" ]] || continue
+  # Not this script: it reads the previous addresses out of the tree to decide
+  # what to replace, and rewriting its own greps would break the next run.
+  [[ "$f" == "scripts/record-deployment.sh" ]] && continue
   sub "$f" "$OLD_VAULT_G" "$VAULT_G"
   sub "$f" "$OLD_VAULT_A" "$VAULT_A"
   sub "$f" "$OLD_SHARE_G" "$SHARE_G"
   sub "$f" "$OLD_SHARE_A" "$SHARE_A"
   [[ -n "$OLD_ORACLE_G" ]] && sub "$f" "$OLD_ORACLE_G" "$ORACLE_G"
   [[ -n "$OLD_ORACLE_A" ]] && sub "$f" "$OLD_ORACLE_A" "$ORACLE_A"
+  [[ -n "$OLD_FACTORY" ]] && sub "$f" "$OLD_FACTORY" "$FACTORY"
 done
+
+# A tracked file still carrying a dead address is a failure, not a warning.
+# This is the check that would have caught the six-file list being short.
+#
+# Paired old:new, and a pair whose halves are equal is skipped - otherwise a
+# second run, which correctly changes nothing, reports every address it just
+# wrote as a dead one that survived. Found by running it twice.
+LEFT=0
+for pair in "$OLD_VAULT_G:$VAULT_G" "$OLD_VAULT_A:$VAULT_A" \
+            "$OLD_SHARE_G:$SHARE_G" "$OLD_SHARE_A:$SHARE_A" \
+            "$OLD_ORACLE_G:$ORACLE_G" "$OLD_ORACLE_A:$ORACLE_A" \
+            "$OLD_FACTORY:$FACTORY"; do
+  old=${pair%%:*}
+  fresh=${pair#*:}
+  [[ -n "$old" ]] || continue
+  [[ "${old,,}" == "${fresh,,}" ]] && continue
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    echo "   STILL PRESENT in $hit: $old" >&2
+    LEFT=1
+  done < <(git grep -lie "$old" -- '*.sh' '*.md' '*.mjs' '*.ts' '*.sol' 2>/dev/null \
+             | grep -v '^audit/' | grep -v '^scripts/record-deployment.sh' || true)
+done
+[[ "$LEFT" == 0 ]] || fail "a dead address survives in a tracked file; fix it before committing"
 
 # The staking address is new rather than a replacement, so it is set rather
 # than substituted.
