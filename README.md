@@ -351,6 +351,7 @@ of them puts a key or a password on a command line.
 | `feed-env.sh` | writes `feed/.env` with the publisher's key taken out of the keystore and never shown |
 | `borrow-musd.sh` | opens a trove on Mezo's native borrow system, so there is MUSD to buy shares with (the dapp now does this too, from the page) |
 | `fund-backstop.sh` | donates MUSD to a vault's reserves to cover the H-1 shortfall, so every share can be redeemed |
+| `buy-shares.sh` | buys shares from the keystore account, by share count or by MUSD spent. Exists because seeding a pool needs shares and MUSD in the same account, and the alternative was importing the deployer key into a browser |
 | `create-pool.sh` | lists an index share against borrowable MUSD on Mezo's own DEX. Dry run by default; refuses an unborrowable MUSD, a ratio that disagrees with the oracle, and `FROM` with `--execute` |
 | `verify-pool.sh` | reads a listed pool back: factory and router agree, neither side empty, price within 300 bps of the oracle. The only honest confirmation on a chain whose receipts lag |
 
