@@ -136,9 +136,17 @@ cat <<PLAN
    settlement    $MUSD ($sym)
    two indices   GOLOGGLE, AMEZON
    fee           50 bps, half of it retained in reserves
-   roles         all four to the sender unless ADMIN/PUBLISHER/GUARDIAN/
-                 TREASURER are set in the environment. One key holding all
-                 four is testnet-only; the script warns about it too.
+   admin         ${ADMIN:-$SENDER}
+   publisher     ${PUBLISHER:-(the admin)}
+   guardian      ${GUARDIAN:-(the admin)}
+   treasurer     ${TREASURER:-(the admin)}
+                 Printed rather than described, because the previous version
+                 said "all four to the sender unless ... are set" and an
+                 operator could not tell from that line which had actually
+                 been set. GUARDIAN and TREASURER must differ: the factory
+                 refuses one address holding both, since the guardian can
+                 detach staking and the treasurer takes the fees that then
+                 accrue instead.
    verification  blockscout at $VERIFIER_URL
 
 PLAN
@@ -147,6 +155,12 @@ if [[ "$RESUME" == 1 ]]; then
 else
   read -r -p "Type yes to deploy: " answer
   [[ "$answer" == "yes" ]] || fail "not confirmed"
+fi
+
+# Checked here as well as in the script, so it fails before the password
+# prompt rather than after it.
+if [[ -n "${GUARDIAN:-}" && "${GUARDIAN:-}" == "${TREASURER:-}" ]]; then
+  fail "GUARDIAN and TREASURER are the same address; the factory will refuse to register an index"
 fi
 
 say "deploying"

@@ -186,13 +186,102 @@ purpose: a share is meant to **track the index**. NAV-based redemption would
 make the share track the vault's balance sheet instead, which is a different
 product and not the one being built.
 
-### Where yield is going to come from
+### Where the yield comes from: staking MEZO
 
-Not from holding shares - from staking MEZO against the revenue stream above.
-The treasury share of each fee is real income with no emissions behind it, and
-routing it to stakers gives a rate that divides MUSD actually distributed by
-MEZO actually staked. Both terms are on chain and both are checkable. That
-work is tracked separately; nothing in this repo pays yield today.
+Not from holding a share - from staking MEZO against the revenue stream above.
+`LeekStaking` is deployed and both vaults are wired to it.
+
+Stake MEZO, receive sMEZO one for one, and two things follow.
+
+**A fee discount.** `IssuanceVault.effectiveFeeBps(address)` is what a buy or
+a redemption actually charges, and it is the number the dapp quotes - read
+from the vault rather than multiplied out in the page, because the vault
+clamps the discount independently and falls back to the undiscounted fee if
+the staking call reverts or exhausts its gas stipend. The tiers at the live
+settings:
+
+| Staked MEZO | Discount | Fee paid |
+|---|---|---|
+| 100 | 10% | 0.45% |
+| 1,000 | 25% | 0.375% |
+| 5,000 | 50% | 0.25% |
+
+`MAX_DISCOUNT_BPS` is 5000, so the fee can never be discounted below half
+whatever a future tier says, and `tierAt`/`tierCount` are public so the dapp
+lists them rather than hardcoding the table above.
+
+**A share of the revenue.** The treasury half of every fee is transferred to
+`LeekStaking` and credited through an `accMusdPerShare` accumulator with the
+usual `rewardDebt` per account, so a staker earns only on revenue that arrived
+while they were staked. `pending(address)` is what they can claim and
+`totalDistributed()` is what has been credited to everyone, ever. **Nothing is
+minted to fund this.** There is no emission, no inflation and no token
+schedule: if nobody trades, stakers earn nothing, and the dapp says so in
+words rather than showing a zero that reads like a measurement.
+
+#### The holding period, which is deliberate and surprising
+
+A discount that could be acquired and released inside one transaction is a
+discount for rent, not for holding - and because sMEZO is transferable, one
+stake could have granted the top tier to any number of traders, one per
+transaction. So `LeekStaking` enforces a cooldown, and three things follow
+that are worth knowing before you stake:
+
+- **The discount does not apply during the cooldown.** `discountBpsFor`
+  returns 0 while an account is cooling. Staking and immediately seeing no
+  discount is correct behaviour, and the dapp explains it rather than leaving
+  it to look broken.
+- **`unstake` and `claim` are both gated** by the same clock. Gating only
+  `unstake` left the reward leg of the attack free, which is one of the two
+  High findings the third audit round raised against the second round's own
+  fix for this.
+- **Every increase extends the cooldown in proportion** to how much the
+  position grew, accumulating from whichever is later of the existing deadline
+  and now. Taking the maximum of the per-step fractions instead - which is
+  what the first fix did - let a position grown in 144 small steps inside one
+  transaction wait **35 seconds instead of 3,600**. Proportional extension
+  also means 1 wei sent to a large position moves the deadline by
+  approximately nothing, which is what stops the cooldown being usable as a
+  griefing weapon.
+
+#### What rate the dapp may quote, and what it may not
+
+There is a real rate here, which is exactly why the page is careful with it.
+It shows two numbers that answer different questions:
+
+- **Realised per MEZO** is `totalDistributed / totalStaked`: fees credited to
+  date over what is staked now. A fact about the past. It carries no window
+  and therefore is not a rate.
+- **Observed rate** is how far `accMusdPerShare` moved between two samples the
+  page itself took, annualised, with the length of that window printed beside
+  it.
+
+The window is the page's own uptime because that is the only interval whose
+length is known: the accumulator carries no timestamp on chain, so nothing can
+say over how long `totalDistributed` accumulated. The function refuses to
+answer below two minutes, refuses when no revenue arrived however long the
+window, and never compounds - a plausible-looking figure extrapolated from a
+thirty-second sample of a single trade would be the most dishonest thing on
+the page. `web/test/stakingRate.test.ts` is mostly tests of when it must say
+"not yet" instead of a number.
+
+#### The guardian can detach it, and cannot be overruled immediately
+
+A staking contract that reverts would otherwise freeze buying *and* redeeming,
+so `GUARDIAN_ROLE` can call `emergencyUnsetStaking()` (only while paused, so
+the step is part of a declared incident) and revenue goes back to
+`feesAccrued`. That rescue holds for `STAKING_RELOCK_DELAY`, 24 hours:
+`setStaking` reverts with `StakingLocked` inside the window, because without
+it the admin whose mistake caused the incident could re-point the vault in the
+next block, as often as the guardian unset it. Setting staking to **zero**
+stays allowed throughout, so the lock can never trap a vault pointed at a
+hostile contract.
+
+`registerIndex` also refuses `guardian == treasurer`. The written argument for
+delegating the detach was that unsetting "cannot take value, because only
+`TREASURER_ROLE` can reach `feesAccrued`", and that is only true when the two
+differ - one address holding both could stop every staker's rewards while
+trading looked entirely normal, then withdraw the fees that accrued instead.
 
 ## Mezo testnet has two MUSD contracts, and the ecosystem is split
 
@@ -345,6 +434,7 @@ of them puts a key or a password on a command line.
 |---|---|
 | `local-up.sh` | the whole stack on a local chain: anvil, the real deploy script, a mock settlement token, the feed, the dapp. `--fund 0xYou` mints to your own wallet |
 | `deploy-mezo.sh` | deploys to Mezo testnet after five pre-flight checks, loops past the chain's late receipts, verifies on the explorer. `--checks-only` proves everything and deploys nothing |
+| `record-deployment.sh` | reads a deploy log, verifies every address against the chain (code present, each vault bound to its own share and oracle, both bound to staking, the two indices distinct), and only then writes them into `ADDRESSES.md`, the Dockerfile's build args and `check-bundle.mjs`. Exists because a redeploy lands eight addresses that then have to appear identically in four places, and silent transcription error is what the whole preamble of `ADDRESSES.md` is about |
 | `verify-bytecode.sh` | compares every deployed contract with a local build, masking immutables. No key, no explorer, anyone can reproduce it |
 | `grant-publisher.sh` | grants `PUBLISHER_ROLE` to a dedicated key and revokes it from the deployer, confirming by reading `hasRole` |
 | `sweep-publisher.sh` | sends all but a gas float from the publisher back to the deployer |

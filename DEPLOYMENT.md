@@ -58,7 +58,7 @@ assume them.
       inside an immutable per-round bound.
       Verify with `hasRole`, not from memory:
       ```sh
-      ORACLE=0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6
+      ORACLE=0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
       PUB=0x76460066A45E72C07e84cd118CB3c6Fc0c8F949E   # production publisher
       cast call $ORACLE "hasRole(bytes32,address)(bool)" $(cast keccak "PUBLISHER_ROLE") \
         $PUB --rpc-url https://rpc.test.mezo.org   # must be true
