@@ -9,25 +9,38 @@ and a signing path that ends on hardware.
 lending market, in `leek-lend`, written and tested and not yet deployed. The
 wallet that signs for all of it is **LeekWallet**.
 
-Built for the Mezo Buildathon, Track 1. The wallet that signs it is
-[LeekWallet](https://github.com/0xOucan/LeekWallet); the lending market that
-borrows against these shares will live in `leek-lend`.
+Built for the **Mezo Buildathon** (AKINDO), Wave 1, Track 1. The wallet that
+signs it is [LeekWallet](https://github.com/0xOucan/LeekWallet) — Track 2,
+which now carries a **LeekDefi mini-app** that reads these same contracts and
+four decoder rows so the device draws a `buy` itself, page by page. The lending
+market that borrows against these shares will live in `leek-lend`.
 
 ## Where this is, today
 
-**Live on Mezo testnet (31611) since 2026-10-17.** Seven contracts, settling
-in the MUSD Mezo's own borrow system mints, so MUSD obtained by borrowing
-against BTC can be spent here. Addresses, the live state when recorded, and
-both keys and what each can do are in [ADDRESSES.md](ADDRESSES.md).
+**Live on Mezo testnet (31611), redeployed 2026-10-18.** Eight contracts,
+settling in the MUSD Mezo's own borrow system mints, so MUSD obtained by
+borrowing against BTC can be spent here. Addresses, the live state when
+recorded, and both keys and what each can do are in
+[ADDRESSES.md](ADDRESSES.md).
+
+The front end and the price feed are **deployed** at
+[leekdefi.0xoucanproject.xyz](https://leekdefi.0xoucanproject.xyz), both
+oracles publishing, with the deploying key's `PUBLISHER_ROLE` renounced on
+both — so the key that deployed cannot walk the price.
+
+**Two things about the demo state, said here rather than implied by a number.**
+The GOLOGGLE/MUSD pool is **one account providing both sides** at the oracle
+price: it makes the pair tradeable and it is not organic depth. The trades that
+produced the staking revenue are **team-generated**, made to exercise the path.
 
 | Piece | State |
 |---|---|
 | Contracts | **deployed and verified** on Mezo testnet; three verified on the explorer, all seven against the source (`./scripts/verify-bytecode.sh`) |
 | Roles | split: a publisher key that can only publish, a deployer key that can do everything but publish |
-| Price feed | runs; rehearsed against the live oracles; **not yet on the VPS** |
-| Front end | **points at Mezo testnet**; a full buy -> redeem round trip completed on chain; onboarding, the faucet link and native borrowing are in the page; **not yet deployed to the VPS** |
+| Price feed | **deployed**; both oracles publishing, `lastError` null, a round every 30s when the price moves 50 bps |
+| Front end | **deployed**; a full buy -> redeem round trip completed on chain; onboarding, the faucet link, native borrowing and the MEZO staking panel are in the page |
 | Leeknding (lending) | written, 95 tests, 8 invariants, **not deployed** — `leek-lend` |
-| Air-gapped signing | the wallet draws Mezo transactions in BTC; the filmed demo is owed |
+| Air-gapped signing | the wallet draws Mezo transactions in BTC, and `buy`, `redeem`, `stake` and `unstake` field by field from its own decoder; **no byte has been flashed to a board yet**, so no screen has drawn one |
 
 > **Trying this?** [WALKTHROUGH.md](WALKTHROUGH.md) is the step-by-step, plus
 > the things that are awkward on this chain rather than broken — late
