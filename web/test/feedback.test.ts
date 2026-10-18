@@ -35,10 +35,14 @@ function writeCallCount(): number {
 }
 
 test("every signable path exists and is counted", () => {
-  // Six buttons send transactions: approve, buy/redeem, openTrove,
-  // repay/withdrawMUSD, closeTrove, faucet claim. buy/redeem is one button
-  // with two writeContract calls, so seven calls across six handlers.
-  assert.equal(writeCallCount(), 7);
+  /* Nine buttons send transactions: approve, buy/redeem, openTrove,
+     repay/withdrawMUSD, closeTrove, faucet claim, and the MEZO staking
+     panel's approve, stake/unstake and claim.
+     Ten calls rather than nine, because buy/redeem is one button with two
+     separate `writeContract` calls. Stake/unstake is also one button but a
+     single call with the function name chosen from the mode, so it counts
+     once. */
+  assert.equal(writeCallCount(), 10);
 });
 
 test("no handler assigns the hash to a const it cannot share with its catch", () => {
@@ -53,7 +57,7 @@ test("no handler assigns the hash to a const it cannot share with its catch", ()
 
 test("every write handler declares a hash its catch can reach", () => {
   const declarations = APP.split("let hash: `0x${string}` | undefined;").length - 1;
-  assert.equal(declarations, 6, "expected one hash declaration per write handler");
+  assert.equal(declarations, 9, "expected one hash declaration per write handler");
 });
 
 test("every write handler clears the in-flight lock when it finishes", () => {
@@ -63,15 +67,15 @@ test("every write handler clears the in-flight lock when it finishes", () => {
   // commonest outcome in testing - does not leave the button locked until
   // reload. The initial value is an object literal, not an assignment, so it
   // is not counted here.
-  assert.equal(clears, 6);
+  assert.equal(clears, 9);
   // Every assignment is either one of those clears or one of the six arming
   // assignments; anything else is a handler setting a lock it never releases.
-  assert.equal(sets - clears, 6);
+  assert.equal(sets - clears, 9);
 });
 
 test("every write button reads the in-flight lock, so a render cannot unlock it", () => {
   const busy = APP.split("busy: state.inFlight ===").length - 1;
-  assert.equal(busy, 6, "expected every one of the six write buttons to pass busy");
+  assert.equal(busy, 9, "expected every one of the nine write buttons to pass busy");
 });
 
 test("actionButton can start pending", () => {
@@ -83,13 +87,18 @@ test("actionButton can start pending", () => {
 test("messages render through the helper that attaches the explorer link", () => {
   // A direct notice(state.xMessage.kind, ...) call renders without a link,
   // which is how the hash stayed invisible on success.
-  for (const name of ["approveMessage", "tradeMessage", "borrowMessage", "faucetMessage"]) {
+  for (const name of ["approveMessage", "tradeMessage", "borrowMessage", "faucetMessage", "stakeMessage"]) {
     assert.ok(
       !APP.includes(`notice(state.${name}.kind`),
       `${name} is rendered without its explorer link`,
     );
   }
-  assert.equal(APP.split("txNotice(state.").length - 1, 6);
+  /* A count rather than a list, so a new write path that renders its result
+     with a bare `notice` fails here. Seven: the six that existed before the
+     MEZO staking panel, plus its own - and stake, unstake, claim and the MEZO
+     approval all funnel through one `stakeMessage`, which is why the panel
+     adds one and not four. */
+  assert.equal(APP.split("txNotice(state.").length - 1, 7);
 });
 
 test("the reverted-transaction message no longer pastes a bare URL into its text", () => {

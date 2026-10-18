@@ -74,6 +74,94 @@ export const ERC20_ABI = [
   },
 ] as const;
 
+/**
+ * `LeekStaking`. Reads first, then the three writes.
+ *
+ * `pending` and `claimable` are separate on purpose and the panel shows their
+ * sum: `claimable` holds a payout the MUSD transfer refused, which is a real
+ * balance the staker still owns, and a panel that showed only `pending` would
+ * report zero for someone whose reward had been set aside.
+ */
+export const STAKING_ABI = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  { type: "function", name: "totalSupply", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  {
+    type: "function",
+    name: "pending",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimable",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "coolingUntil",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "discountBpsFor",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint16" }],
+  },
+  { type: "function", name: "cooldown", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "totalDistributed", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "accMusdPerShare", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "tierCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  {
+    type: "function",
+    name: "tierAt",
+    stateMutability: "view",
+    inputs: [{ name: "index", type: "uint256" }],
+    outputs: [
+      { name: "minStake", type: "uint256" },
+      { name: "discountBps", type: "uint16" },
+    ],
+  },
+  {
+    type: "function",
+    name: "stake",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "unstake",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+  { type: "function", name: "claim", stateMutability: "nonpayable", inputs: [], outputs: [{ type: "uint256" }] },
+] as const;
+
+/** The vault's view of a staker, which is the number a buy will actually use. */
+export const VAULT_FEE_ABI = [
+  {
+    type: "function",
+    name: "effectiveFeeBps",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint16" }],
+  },
+  { type: "function", name: "staking", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
+
 export const ORACLE_ABI = [
   {
     type: "function",

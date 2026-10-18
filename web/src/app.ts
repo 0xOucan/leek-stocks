@@ -10,7 +10,7 @@
 
 import { type Address, type EIP1193Provider, createClient, custom, formatUnits } from "viem";
 import { waitForTransactionReceipt, writeContract } from "viem/actions";
-import { ERC20_ABI, VAULT_ABI } from "./abi.ts";
+import { ERC20_ABI, STAKING_ABI, VAULT_ABI } from "./abi.ts";
 import { explorerAddressUrl, explorerTxUrl, mezoTestnet, publicClient } from "./chain.ts";
 import { CONFIG, MARKETS, anyMarketDeployed, type MarketConfig } from "./config.ts";
 import { pollFeed, type FeedSnapshot, type IndexStatus } from "./feed.ts";
@@ -49,6 +49,8 @@ import {
   type TrovePosition,
 } from "./mezoBorrow.ts";
 import { readBalances, readMarket, readVaultPrice, type Balances, type MarketState } from "./market.ts";
+import { readStaker, readStaking, type StakerState, type StakingState } from "./staking.ts";
+import { describeWindow, rateView, type RateSample } from "./lib/stakingRate.ts";
 import {
   ICONS,
   actionButton,
@@ -182,6 +184,21 @@ interface State {
   walletMessage: string | null;
   tradeMessage: TxMessage | null;
   approveMessage: TxMessage | null;
+  /* ----------------------------------------- MEZO fee-discount staking --- */
+  staking: StakingState | null;
+  staker: StakerState | null;
+  stakeAmount: string;
+  stakeMode: "stake" | "unstake";
+  stakeMessage: TxMessage | null;
+  /**
+   * The first accumulator reading this page took, and when.
+   *
+   * Held in memory and never persisted: the rate it feeds is explicitly "what
+   * this page observed while it was open", and a sample restored from an
+   * earlier session would make the window a lie. Reloading resets the
+   * observation, which is the honest behaviour rather than a shortcoming.
+   */
+  rateFirstSample: RateSample | null;
 }
 
 const state: State = {
@@ -209,6 +226,12 @@ const state: State = {
   walletMessage: null,
   tradeMessage: null,
   approveMessage: null,
+  staking: null,
+  staker: null,
+  stakeAmount: "",
+  stakeMode: "stake",
+  stakeMessage: null,
+  rateFirstSample: null,
 };
 
 /* --------------------------------------------------------------- selectors */
@@ -271,6 +294,7 @@ const sections = {
   borrow: el("section", { class: "panel", id: "borrow", "aria-labelledby": "borrow-heading" }),
   trade: el("section", { class: "panel", id: "trade", "aria-labelledby": "trade-heading" }),
   position: el("section", { class: "panel", id: "position", "aria-labelledby": "position-heading" }),
+  staking: el("section", { class: "panel", id: "staking", "aria-labelledby": "staking-heading" }),
   faucet: el("section", { class: "panel", id: "faucet", "aria-labelledby": "faucet-heading" }),
 };
 
@@ -317,6 +341,7 @@ export function mount(): void {
     sections.borrow,
     sections.trade,
     sections.position,
+    sections.staking,
     sections.faucet,
     el("footer", { class: "footnote" }, [
       el("p", {}, [
@@ -391,6 +416,7 @@ function renderAll(): void {
   renderIndices();
   renderTrade();
   renderPosition();
+  renderStaking();
   renderFaucet();
 }
 
@@ -429,6 +455,24 @@ async function refreshChain(): Promise<void> {
   if (connection && CONFIG.musd && market.share && market.vault) {
     state.balances = await readBalances(connection.address, CONFIG.musd, market.share, market.vault);
   }
+  /* Staking, every poll, for the same reason the borrow market is read every
+     poll: the tiers and the cooldown are settable, the revenue total moves on
+     every trade anyone makes, and this account's discount depends on a
+     cooldown that expires with the clock rather than with anything the user
+     does - so a cached answer here goes wrong on its own. */
+  if (CONFIG.staking) {
+    state.staking = await readStaking(market.vault);
+    if (state.staking) {
+      /* Taken once and then left alone, so the window grows. Re-taking it
+         each poll would hold the window at five seconds and make every rate
+         an extrapolation from a single interval. */
+      state.rateFirstSample ??= {
+        accMusdPerShare: state.staking.accMusdPerShare,
+        atSeconds: Math.floor(Date.now() / 1000),
+      };
+    }
+    state.staker = connection ? await readStaker(connection.address, market.vault) : null;
+  }
   if (connection && CONFIG.faucet && faucetAllowedOnChain(connection.chainId)) {
     const faucet = CONFIG.faucet;
     const tokens = await Promise.all(
@@ -453,6 +497,7 @@ async function refreshChain(): Promise<void> {
     renderIndices();
     renderTrade();
     renderPosition();
+    renderStaking();
     renderFaucet();
   });
 }
@@ -1006,7 +1051,7 @@ function renderSolvencyPanel(chain: MarketState): void {
          plainest line here. */
       el("p", { class: "muted small" }, [
         el("strong", {}, ["Holding a share pays no income."]),
-        " A share returns the index price at the moment you redeem, less the fee. Reserves growing does not increase what one share is worth, so there is no yield and no APY to quote. Fee revenue currently accrues to the treasury; routing it to MEZO stakers is the next step, and that will have a rate derived from these same numbers.",
+        " A share returns the index price at the moment you redeem, less the fee. Reserves growing does not increase what one share is worth, so there is no yield and no APY to quote. The treasury half of each fee is routed to MEZO stakers, who do earn: see the staking panel below, where that rate is derived from these same numbers. A share is not a claim on it.",
       ]),
     ]),
   );
@@ -1982,6 +2027,356 @@ function renderCloseTrove(plan: PositionPlan, trove: TrovePosition): void {
 }
 
 /* ------------------------------------------------------------------ faucet */
+
+/* ------------------------------------------------------- MEZO fee discount */
+
+/** The next tier up, so the panel can say what another stake would buy. */
+function nextTier(staking: StakingState, staked: bigint): { minStake: bigint; discountBps: number } | null {
+  for (const tier of staking.tiers) {
+    if (staked < tier.minStake) return tier;
+  }
+  return null;
+}
+
+/**
+ * Stake MEZO, pay a lower fee, take a share of the protocol's revenue.
+ *
+ * This is the one place on the page where a rate is legitimate, and the care
+ * goes into not overstating it. A share pays nothing - `renderSolvencyPanel`
+ * says so in as many words - but a staked position earns the treasury half of
+ * every fee, which is real revenue with a real denominator. So the panel
+ * prints what has actually been distributed, and a rate only once it has
+ * watched the accumulator move for long enough to have a window worth
+ * annualising. See `lib/stakingRate.ts` for why that window is the page's own
+ * uptime and not something read from the chain.
+ */
+function renderStaking(): void {
+  clear(sections.staking);
+  if (!CONFIG.staking) return;
+
+  sections.staking.append(el("h2", { id: "staking-heading" }, ["Stake MEZO"]));
+  sections.staking.append(
+    el("p", { class: "muted" }, [
+      "Staking MEZO does two things: it discounts the fee you pay to buy and redeem, and it pays you a share of the fees everyone else pays. Unlike holding a share, this does earn.",
+    ]),
+  );
+
+  const staking = state.staking;
+  if (!staking) {
+    sections.staking.append(
+      el("p", { class: "muted" }, [
+        "The staking contract is not answering on this chain. Nothing else on this page depends on it.",
+      ]),
+    );
+    return;
+  }
+
+  /* Said out loud, because the guardian can detach staking during an incident
+     and the fee discount then silently stops applying. A panel that kept
+     quoting a discount the vault no longer honours would be the page
+     contradicting the chain. */
+  if (!staking.wiredToVault) {
+    sections.staking.append(
+      notice(
+        "warning",
+        "The vault for this market is not currently pointed at the staking contract, so no fee discount applies to a buy right now. Staked MEZO and rewards already earned are unaffected.",
+      ),
+    );
+  }
+
+  const rate = rateView({
+    totalDistributed: staking.totalDistributed,
+    totalStaked: staking.totalStaked,
+    first: state.rateFirstSample,
+    latest: { accMusdPerShare: staking.accMusdPerShare, atSeconds: Math.floor(Date.now() / 1000) },
+  });
+
+  sections.staking.append(
+    el("div", { class: "stats" }, [
+      stat("Total staked", `${formatAmount(staking.totalStaked, MUSD_DECIMALS, 2)} MEZO`, undefined, "across every staker"),
+      stat(
+        "Revenue to stakers",
+        `${formatAmount(staking.totalDistributed, MUSD_DECIMALS, 4)} MUSD`,
+        undefined,
+        "distributed since this contract was deployed",
+      ),
+      /* Two figures rather than one headline APY, because they answer
+         different questions and only one of them is a fact about the past. */
+      stat(
+        "Realised per MEZO",
+        `${rate.realisedPerMezo.toFixed(6)} MUSD`,
+        undefined,
+        "fees credited to date, divided by what is staked now",
+      ),
+      rate.observedApr === null
+        ? stat("Observed rate", "not yet", undefined, rate.reason ?? "")
+        : stat(
+            "Observed rate",
+            `${rate.observedApr.toFixed(2)}% APR`,
+            undefined,
+            `extrapolated from ${describeWindow(rate.windowSeconds)} of fee revenue this page watched arrive — an observation, not a forecast`,
+          ),
+    ]),
+  );
+
+  const connection = state.connection;
+  const staker = state.staker;
+  if (!connection) {
+    sections.staking.append(el("p", { class: "muted" }, ["Connect a wallet to stake."]));
+    return;
+  }
+  if (!onRightChain()) {
+    sections.staking.append(el("p", { class: "muted" }, ["Switch to the right network to stake."]));
+    return;
+  }
+  if (!CONFIG.mezo) {
+    sections.staking.append(
+      el("p", { class: "muted" }, [
+        "No MEZO token is configured for this chain, so there is nothing to stake. On Mezo it is a precompile at a fixed address; on a local chain it has to be deployed.",
+      ]),
+    );
+    return;
+  }
+  if (!staker) {
+    sections.staking.append(el("p", { class: "muted" }, ["Reading your position…"]));
+    return;
+  }
+  const mezo = CONFIG.mezo;
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const cooling = Math.max(0, staker.coolingUntil - nowSeconds);
+  const upgrade = nextTier(staking, staker.staked);
+
+  sections.staking.append(
+    el("div", { class: "stats" }, [
+      stat("Your stake", `${formatAmount(staker.staked, MUSD_DECIMALS, 2)} sMEZO`, undefined, "one sMEZO per MEZO staked"),
+      stat(
+        "Your rewards",
+        `${formatAmount(staker.rewards, MUSD_DECIMALS, 6)} MUSD`,
+        undefined,
+        staker.setAside > 0n
+          ? `${formatAmount(staker.setAside, MUSD_DECIMALS, 6)} of it was set aside by a transfer that failed, and is still yours`
+          : "claimable once the holding period has passed",
+      ),
+      stat(
+        "Your fee",
+        staker.effectiveFeeBps === null ? "unknown" : `${(staker.effectiveFeeBps / 100).toFixed(2)}%`,
+        undefined,
+        staker.discountBps > 0
+          ? `${(staker.discountBps / 100).toFixed(0)}% off, read from the vault rather than computed here`
+          : upgrade
+            ? `stake ${formatAmount(upgrade.minStake, MUSD_DECIMALS, 0)} MEZO for ${(upgrade.discountBps / 100).toFixed(0)}% off`
+            : "no discount at this stake",
+      ),
+    ]),
+  );
+
+  /* The trap this panel has to explain, because the contract is right and the
+     behaviour is surprising: the discount requires the position to have been
+     *held*, so it does not apply during the cooldown, and every top-up
+     extends that cooldown in proportion to how much the position grew. That
+     is what stops a discount being rented for one transaction - but someone
+     who stakes, sees no discount, and is told nothing would reasonably
+     conclude the feature is broken. */
+  if (cooling > 0) {
+    sections.staking.append(
+      notice(
+        "ok",
+        `Your holding period has ${describeWindow(cooling)} to run. Until it passes you cannot unstake or claim, and no fee discount applies. Every stake extends it in proportion to how much your position grew — that is what stops a discount being borrowed for a single trade.`,
+      ),
+    );
+  }
+
+  const parsed = parseAmount(state.stakeAmount, MUSD_DECIMALS);
+  const amount = parsed.ok ? parsed.value : null;
+  const unstaking = state.stakeMode === "unstake";
+  const balance = unstaking ? staker.staked : staker.mezoBalance;
+  /* Only when staking. `unstake` moves sMEZO the contract already holds for
+     this account, so it needs no allowance on anything. */
+  const needsApproval = !unstaking && amount !== null && amount > staker.mezoAllowance;
+
+  const modes = el("div", { class: "segmented", role: "radiogroup", "aria-label": "Action" });
+  for (const mode of ["stake", "unstake"] as const) {
+    const modeButton = el("button", {
+      type: "button",
+      role: "radio",
+      "aria-checked": state.stakeMode === mode ? "true" : "false",
+      class: `segment${state.stakeMode === mode ? " is-active" : ""}`,
+    }, [mode === "stake" ? "Stake" : "Unstake"]);
+    modeButton.addEventListener("click", () => {
+      state.stakeMode = mode;
+      state.stakeAmount = "";
+      state.stakeMessage = null;
+      renderStaking();
+    });
+    modes.append(modeButton);
+  }
+
+  const stakeInput = el("input", {
+    type: "text",
+    inputmode: "decimal",
+    id: "stake-amount",
+    value: state.stakeAmount,
+    placeholder: "0.0",
+    "aria-describedby": "stake-balance",
+  }) as HTMLInputElement;
+  stakeInput.addEventListener("input", () => {
+    state.stakeAmount = stakeInput.value;
+    state.stakeMessage = null;
+    renderStaking();
+  });
+
+  const form = el("div", { class: "form" }, [
+    modes,
+    el("label", { for: "stake-amount" }, [unstaking ? "sMEZO to unstake" : "MEZO to stake"]),
+    stakeInput,
+    el("p", { class: "muted small", id: "stake-balance" }, [
+      `You hold ${formatAmount(balance, MUSD_DECIMALS, 4)} ${unstaking ? "sMEZO" : "MEZO"}.`,
+    ]),
+  ]);
+
+  const actions: HTMLElement[] = [];
+
+  if (needsApproval && amount !== null) {
+    const approve = actionButton({
+      label: `Approve ${formatAmount(amount, MUSD_DECIMALS, 4)} MEZO`,
+      pendingLabel: "Approving…",
+      busy: state.inFlight === "stakeApprove",
+      onClick: async () => {
+        state.stakeMessage = null;
+        state.inFlight = "stakeApprove";
+        let hash: `0x${string}` | undefined;
+        try {
+          const wallet = walletClientFor(connection.provider, connection.address);
+          // Exact amount, not an unlimited allowance, as everywhere else here.
+          hash = await writeContract(wallet, {
+            address: mezo,
+            abi: ERC20_ABI,
+            functionName: "approve",
+            args: [staking.staking, amount],
+          });
+          state.stakeMessage = { kind: "ok", text: "Approved. Waiting for the allowance…", hash };
+          renderStaking();
+          await sendAndWait(hash);
+          await refreshChain();
+          state.stakeMessage = { kind: "ok", text: "Allowance confirmed.", hash };
+        } catch (error) {
+          const explained = describeError(error);
+          state.stakeMessage = { kind: "error", text: explained.message, name: explained.name, hash };
+        } finally {
+          state.inFlight = null;
+          renderAll();
+        }
+      },
+    });
+    actions.push(approve.element);
+  } else {
+    /* The reason the button is unavailable, in the user's terms rather than a
+       greyed-out control with no explanation. `parseAmount` already carries
+       one for a malformed or zero amount, so it is reused rather than
+       reworded into something that disagrees with the rest of the page. */
+    const blocked = !parsed.ok
+      ? parsed.reason
+      : parsed.value > balance
+        ? `That is more than your ${unstaking ? "staked balance" : "MEZO balance"}.`
+        : unstaking && cooling > 0
+          ? `Your holding period has ${describeWindow(cooling)} to run.`
+          : null;
+
+    const action = actionButton({
+      label: unstaking ? "Unstake" : "Stake",
+      pendingLabel: unstaking ? "Unstaking…" : "Staking…",
+      busy: state.inFlight === "stake",
+      onClick: async () => {
+        if (amount === null) return;
+        state.stakeMessage = null;
+        state.inFlight = "stake";
+        let hash: `0x${string}` | undefined;
+        try {
+          const wallet = walletClientFor(connection.provider, connection.address);
+          hash = await writeContract(wallet, {
+            address: staking.staking,
+            abi: STAKING_ABI,
+            functionName: unstaking ? "unstake" : "stake",
+            args: [amount],
+          });
+          state.stakeMessage = {
+            kind: "ok",
+            text: unstaking ? "Unstaking. Waiting for confirmation…" : "Staking. Waiting for confirmation…",
+            hash,
+          };
+          renderStaking();
+          await sendAndWait(hash);
+          await refreshChain();
+          state.stakeAmount = "";
+          state.stakeMessage = {
+            kind: "ok",
+            text: unstaking
+              ? "Unstaked. Your MEZO and any rewards owed are back in your wallet."
+              : "Staked. Your fee discount starts once the holding period has passed.",
+            hash,
+          };
+        } catch (error) {
+          const explained = describeError(error);
+          state.stakeMessage = { kind: "error", text: explained.message, name: explained.name, hash };
+        } finally {
+          state.inFlight = null;
+          renderAll();
+        }
+      },
+    });
+    action.setBlocked(blocked);
+    actions.push(action.element);
+  }
+
+  if (staker.rewards > 0n) {
+    const claimAction = actionButton({
+      label: `Claim ${formatAmount(staker.rewards, MUSD_DECIMALS, 6)} MUSD`,
+      pendingLabel: "Claiming…",
+      busy: state.inFlight === "stakeClaim",
+      onClick: async () => {
+        state.stakeMessage = null;
+        state.inFlight = "stakeClaim";
+        let hash: `0x${string}` | undefined;
+        try {
+          const wallet = walletClientFor(connection.provider, connection.address);
+          hash = await writeContract(wallet, {
+            address: staking.staking,
+            abi: STAKING_ABI,
+            functionName: "claim",
+          });
+          state.stakeMessage = { kind: "ok", text: "Claiming. Waiting for confirmation…", hash };
+          renderStaking();
+          await sendAndWait(hash);
+          await refreshChain();
+          state.stakeMessage = { kind: "ok", text: "Claimed." , hash };
+        } catch (error) {
+          const explained = describeError(error);
+          state.stakeMessage = { kind: "error", text: explained.message, name: explained.name, hash };
+        } finally {
+          state.inFlight = null;
+          renderAll();
+        }
+      },
+    });
+    /* Gated on the same clock as `unstake`, because the contract is: leaving
+       `claim` ungated was one of the two High findings the third audit round
+       raised against the second round's own cooldown fix. */
+    claimAction.setBlocked(cooling > 0 ? `Your holding period has ${describeWindow(cooling)} to run.` : null);
+    actions.push(claimAction.element);
+  }
+
+  form.append(el("div", { class: "actions" }, actions));
+  sections.staking.append(form);
+
+  if (state.stakeMessage) sections.staking.append(txNotice(state.stakeMessage));
+
+  sections.staking.append(
+    el("p", { class: "muted small" }, [
+      "Where the money comes from: every buy and redeem charges a fee, part of which stays in the vault as backing and the rest is protocol revenue. That revenue is what is paid out here. Nothing is minted to fund it and there is no emission — if nobody trades, stakers earn nothing, and the rate above says so rather than showing a number.",
+    ]),
+  );
+}
 
 function renderFaucet(): void {
   clear(sections.faucet);

@@ -69,6 +69,14 @@ echo "== contracts"
 # script that deploys to Mezo, run here, rather than a second copy of its
 # constants that can drift from it.
 export ALLOW_CHAIN_ID="$CHAIN_ID"
+# Distinct guardian and treasurer, because registerIndex now refuses one
+# address holding both. That is not a formality here: emergencyUnsetStaking is
+# delegated to the guardian on the argument that unsetting staking cannot take
+# value, since only TREASURER_ROLE can reach feesAccrued - and one key holding
+# both could stop every staker's rewards while trading looked normal and then
+# withdraw the fees. Anvil's accounts 1 and 2, published keys, no value.
+export GUARDIAN=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+export TREASURER=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 # A mock settlement token, because the real MUSD only exists on Mezo. 18
 # decimals, like the real one, so the scaling path is the same.
 # Parsed from `forge create`'s human output, because this Foundry (1.4.4)
@@ -86,6 +94,20 @@ MUSD=$(forge create test/mocks/MockMUSD.sol:MockMUSD \
 echo "   leekMUSD (mock)   $MUSD"
 export SETTLEMENT_TOKEN="$MUSD"
 
+# A mock MEZO too, because the real one is a precompile at a fixed address
+# backed by the Cosmos bank module and there is no code there on Anvil.
+# Without this the staking contract deploys against an address with no
+# contract: every stake reverts, and the staking half of the dapp cannot be
+# clicked at all locally - which is exactly the part that most needs clicking
+# before it goes to a public chain.
+LEEKMEZO=$(forge create test/mocks/MockMUSD.sol:MockMUSD \
+  --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" --broadcast \
+  --constructor-args 18 2>&1 \
+  | grep -iE 'deployed ?to' | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
+[[ -n "$LEEKMEZO" ]] || { echo "could not read the mock MEZO's address" >&2; exit 1; }
+echo "   leekMEZO (mock)   $LEEKMEZO"
+export MEZO_TOKEN="$LEEKMEZO"
+
 forge script script/DeployMezoTestnet.s.sol \
   --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" --broadcast \
   >/tmp/leekdefi-deploy.log 2>&1 || { tail -30 /tmp/leekdefi-deploy.log; exit 1; }
@@ -100,9 +122,11 @@ VAULT_G=$(pick "GOLOGGLE vault")
 VAULT_A=$(pick "AMEZON vault")
 SHARE_G=$(pick "GOLOGGLE share")
 SHARE_A=$(pick "AMEZON share")
+STAKING=$(pick "staking \(sMEZO\)")
 for pair in "factory:$FACTORY" "GOLOGGLE oracle:$ORACLE_G" "AMEZON oracle:$ORACLE_A" \
             "GOLOGGLE vault:$VAULT_G" "AMEZON vault:$VAULT_A" \
-            "GOLOGGLE share:$SHARE_G" "AMEZON share:$SHARE_A"; do
+            "GOLOGGLE share:$SHARE_G" "AMEZON share:$SHARE_A" \
+            "staking:$STAKING"; do
   [[ -n "${pair#*:}" ]] || { echo "could not read ${pair%%:*} from the deploy log" >&2; exit 1; }
 done
 echo "   factory           $FACTORY"
@@ -115,10 +139,13 @@ for who in "$DEPLOYER" "${FUND[@]:-}"; do
   [[ -n "$who" ]] || continue
   cast send "$MUSD" "mint(address,uint256)" "$who" 1000000000000000000000000 \
     --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null
+  # And mock MEZO, so the fee-discount tiers can be reached by clicking.
+  cast send "$LEEKMEZO" "mint(address,uint256)" "$who" 100000000000000000000000 \
+    --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null
   # Gas too, for an address that is not one of Anvil's pre-funded ten.
   cast send "$who" --value 10ether \
     --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null 2>&1 || true
-  echo "   funded $who with 1,000,000 mock MUSD and 10 gas"
+  echo "   funded $who with 1,000,000 mock MUSD, 100,000 mock MEZO and 10 gas"
 done
 
 echo "== feed on :$FEED_PORT (synthetic prices, chain $CHAIN_ID)"
@@ -143,6 +170,8 @@ VITE_RPC_URL=$RPC
 VITE_FEED_URL=/prices
 VITE_PUBLIC_URL=http://127.0.0.1:5173
 VITE_MUSD=$MUSD
+VITE_MEZO=$LEEKMEZO
+VITE_STAKING=$STAKING
 VITE_VAULT_GOLOGGLE=$VAULT_G
 VITE_VAULT_AMEZON=$VAULT_A
 VITE_SHARE_GOLOGGLE=$SHARE_G

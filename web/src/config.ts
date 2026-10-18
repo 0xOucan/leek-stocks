@@ -88,6 +88,17 @@ function mezoFaucetUrl(chainId: number): string | undefined {
   return chainId === 31_611 ? "https://faucet.test.mezo.org" : undefined;
 }
 
+/**
+ * MEZO's address, which is the same on both Mezo networks because it is a
+ * precompile over the Cosmos bank module rather than a deployed ERC-20.
+ */
+function mezoToken(chainId: number): Address | undefined {
+  if (chainId === 31_611 || chainId === 31_612) {
+    return getAddress("0x7B7c000000000000000000000000000000000001");
+  }
+  return undefined;
+}
+
 export const CONFIG = {
   rpcUrl: import.meta.env.VITE_RPC_URL ?? "https://rpc.test.mezo.org",
   /*
@@ -107,6 +118,19 @@ export const CONFIG = {
   publicUrl: import.meta.env.VITE_PUBLIC_URL ?? "",
   reownProjectId: import.meta.env.VITE_REOWN_PROJECT_ID ?? "",
   musd: optionalAddress(import.meta.env.VITE_MUSD),
+  /**
+   * The MEZO token, and the staking contract that takes it.
+   *
+   * MEZO is a precompile at a fixed address on both Mezo networks, so it is
+   * defaulted per chain id rather than required - but it is *not* defaulted on
+   * any other chain, because a local rehearsal needs a mock (there is no code
+   * at the precompile address on Anvil) and silently pointing at an address
+   * with no contract there is how a staking panel renders a page of zeroes
+   * that looks like a configuration problem rather than a missing token.
+   */
+  mezo: optionalAddress(import.meta.env.VITE_MEZO) ?? mezoToken(CHAIN_ID),
+  /** Undefined until deployed, like every other address here. */
+  staking: optionalAddress(import.meta.env.VITE_STAKING),
   /** The test-token faucet, on chains where the real MUSD does not exist. */
   faucet: optionalAddress(import.meta.env.VITE_FAUCET),
   /**

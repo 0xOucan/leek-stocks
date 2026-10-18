@@ -327,12 +327,25 @@ export class FeedService {
         state.value = value;
         state.origin = origin;
 
-        const [decimals, maxDeviationBps, minRoundInterval, minAnswer, paused, latest] = await Promise.all([
+        const [decimals, maxDeviationBps, minRoundInterval, minAnswer, paused, block, latest] = await Promise.all([
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "decimals" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "maxDeviationBps" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "minRoundInterval" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "MIN_ANSWER" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "paused" }),
+          /* The chain's own clock, not ours.
+           *
+           * `secondsSinceLast` used to be `Date.now()` minus an on-chain
+           * timestamp, which compares two unrelated clocks. The contract
+           * compares `block.timestamp` against `block.timestamp`, so any skew
+           * between the publisher's host and the chain lands entirely in our
+           * number - and it can go NEGATIVE, which a local run surfaced
+           * immediately: a chain running ahead of the host made
+           * `secondsSinceLast < minRoundInterval` true forever and the feed
+           * stopped publishing altogether, reporting a healthy hold. Reading
+           * the latest block costs one call and makes the comparison the same
+           * one the contract will make. */
+          publicClient.getBlock({ blockTag: "latest" }),
           publicClient
             .readContract({ address: oracle, abi: ORACLE_ABI, functionName: "latestRoundData" })
             .catch(() => null), // reverts with NoData before the first round
@@ -353,7 +366,8 @@ export class FeedService {
         const decision = decidePublish({
           target: toFeedUnits(value, Number(decimals)),
           last,
-          secondsSinceLast: updatedAt === null ? Number.MAX_SAFE_INTEGER : Math.floor(Date.now() / 1000) - updatedAt,
+          secondsSinceLast:
+            updatedAt === null ? Number.MAX_SAFE_INTEGER : Math.max(0, Number(block.timestamp) - updatedAt),
           thresholdBps: this.config.thresholdBps,
           heartbeatSeconds: this.config.heartbeatSeconds,
           maxDeviationBps: Number(maxDeviationBps),
