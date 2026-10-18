@@ -257,13 +257,13 @@ verify the sources on the explorer the same day.
 
 | Contract | Address | Explorer verification | Bytecode |
 |---|---|---|---|
-| `ETFFactory` | `0xCdF824BF8ed17285e40DB081131Cb3e7eC92b084` | **verified** | matches |
-| `IndexOracle` GOLOGGLE | `0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6` | **verified** | matches |
-| `IndexOracle` AMEZON | `0x5Ed8205bA3DC7075099cFC4b2D4b7f2fF8a9cf9D` | **verified** | matches |
-| `IssuanceVault` GOLOGGLE | `0x68A86E4503FCA82ac9eB229Be655E355A019bcC3` | not indexed | matches |
-| `ETFShare` GOLOGGLE | `0x35e0c3df250a1ea46bde6eef2D6ad22C924FCB88` | not indexed | matches |
-| `IssuanceVault` AMEZON | `0x87c6925798769012085b9a71FabA87c31F894f18` | not indexed | matches |
-| `ETFShare` AMEZON | `0x239cC4EB08B92fdB486F00C93E2D47b38c0EBAd4` | not indexed | matches |
+| `ETFFactory` | `0xB3A0965d4A4C47bf9AC180385bF99581CBE0c450` | **verified** | matches |
+| `IndexOracle` GOLOGGLE | `0x50fC20F69Da47c7d3Fb442A5FaF19889029319d9` | **verified** | matches |
+| `IndexOracle` AMEZON | `0xC7ff2d4170564f388338248B08A7a375dCd179bC` | **verified** | matches |
+| `IssuanceVault` GOLOGGLE | `0xF13f191F1eaB90E5331DA292dA922E3b797B1824` | not indexed | matches |
+| `ETFShare` GOLOGGLE | `0xa4220DF063149aa750bd54bEf578b244a3bc9Be7` | not indexed | matches |
+| `IssuanceVault` AMEZON | `0x4b6C535b6d298fB8a51E3577d7037340359d18E1` | not indexed | matches |
+| `ETFShare` AMEZON | `0x6c4A0dEcA88C51a27E91841E7017f1bE654769aD` | not indexed | matches |
 
 Live state when recorded: GOLOGGLE oracle at round 1, answer `2e10` (200.00000000
 at 8 decimals); its vault prices a share at `200e18`; `feeBps` 50,

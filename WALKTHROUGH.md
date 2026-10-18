@@ -87,7 +87,7 @@ Read them from the chain, not from this file:
 
 ```sh
 R=https://rpc.test.mezo.org
-cast call 0x68A86E4503FCA82ac9eB229Be655E355A019bcC3 "musd()(address)" --rpc-url $R
+cast call 0xF13f191F1eaB90E5331DA292dA922E3b797B1824 "musd()(address)" --rpc-url $R
 # must be 0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af — the MUSD
 # BorrowerOperations can mint. Mezo testnet has FIVE contracts reporting MUSD
 # with 18 decimals and this is the only one obtainable by borrowing.

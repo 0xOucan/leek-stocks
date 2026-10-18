@@ -24,7 +24,7 @@ cd "$(dirname "$0")/.."
 ACCOUNT=${ACCOUNT:-monad-deployer}
 RPC=${RPC:-https://rpc.test.mezo.org}
 CHAIN=31611
-VAULT=${VAULT:-0x68A86E4503FCA82ac9eB229Be655E355A019bcC3}   # GOLOGGLE
+VAULT=${VAULT:-0xF13f191F1eaB90E5331DA292dA922E3b797B1824}   # GOLOGGLE
 MUSD=0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af
 
 fail() { printf 'STOP: %s\n' "$1" >&2; exit 1; }

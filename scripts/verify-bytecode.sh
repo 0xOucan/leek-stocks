@@ -28,13 +28,13 @@ import json, subprocess, sys
 rpc = sys.argv[1]
 # The deployment recorded in ADDRESSES.md.
 pairs = [
-    ("ETFFactory",    "0xCdF824BF8ed17285e40DB081131Cb3e7eC92b084"),
-    ("IndexOracle",   "0x7fCb1ed8d6fAaEF00AA5A0104A062299ab7D5BF6"),
-    ("IndexOracle",   "0x5Ed8205bA3DC7075099cFC4b2D4b7f2fF8a9cf9D"),
-    ("IssuanceVault", "0x68A86E4503FCA82ac9eB229Be655E355A019bcC3"),
-    ("ETFShare",      "0x35e0c3df250a1ea46bde6eef2D6ad22C924FCB88"),
-    ("IssuanceVault", "0x87c6925798769012085b9a71FabA87c31F894f18"),
-    ("ETFShare",      "0x239cC4EB08B92fdB486F00C93E2D47b38c0EBAd4"),
+    ("ETFFactory",    "0xB3A0965d4A4C47bf9AC180385bF99581CBE0c450"),
+    ("IndexOracle",   "0x50fC20F69Da47c7d3Fb442A5FaF19889029319d9"),
+    ("IndexOracle",   "0xC7ff2d4170564f388338248B08A7a375dCd179bC"),
+    ("IssuanceVault", "0xF13f191F1eaB90E5331DA292dA922E3b797B1824"),
+    ("ETFShare",      "0xa4220DF063149aa750bd54bEf578b244a3bc9Be7"),
+    ("IssuanceVault", "0x4b6C535b6d298fB8a51E3577d7037340359d18E1"),
+    ("ETFShare",      "0x6c4A0dEcA88C51a27E91841E7017f1bE654769aD"),
 ]
 failed = 0
 for name, addr in pairs:

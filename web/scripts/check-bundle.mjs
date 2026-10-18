@@ -39,11 +39,12 @@ if (CHAIN_ID !== "31611") {
 
 /** The live Mezo testnet deployment. ADDRESSES.md is the record. */
 const REQUIRED = {
-  "GOLOGGLE vault": "0x68A86E4503FCA82ac9eB229Be655E355A019bcC3",
-  "AMEZON vault": "0x87c6925798769012085b9a71FabA87c31F894f18",
-  "GOLOGGLE share": "0x35e0c3df250a1ea46bde6eef2D6ad22C924FCB88",
-  "AMEZON share": "0x239cC4EB08B92fdB486F00C93E2D47b38c0EBAd4",
+  "GOLOGGLE vault": "0xF13f191F1eaB90E5331DA292dA922E3b797B1824",
+  "AMEZON vault": "0x4b6C535b6d298fB8a51E3577d7037340359d18E1",
+  "GOLOGGLE share": "0xa4220DF063149aa750bd54bEf578b244a3bc9Be7",
+  "AMEZON share": "0x6c4A0dEcA88C51a27E91841E7017f1bE654769aD",
   "settlement MUSD (mintable by BorrowerOperations)": "0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af",
+  "MEZO fee-discount staking": "0x6b15c487471CcE6A088D292A2f3834942a60e998",
   "Mezo BorrowerOperations": "0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba",
 };
 
