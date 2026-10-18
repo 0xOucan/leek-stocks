@@ -98,6 +98,13 @@ contract Handler is Test {
         int256 step = (current * int256(bps)) / 10_000;
         int256 next = up ? current + step : current - step;
         if (next <= 0) return;
+        /* Advance past the round interval before publishing.
+         *
+         * Without this the try/catch below swallows every TooSoon and the
+         * price simply never moves, which silently removes price movement
+         * from the state space the invariants are checked against - a worse
+         * outcome than a failing handler, because everything still passes. */
+        vm.warp(block.timestamp + oracle.minRoundInterval());
         vm.prank(publisher);
         try oracle.publish(next) {} catch {}
     }
@@ -134,7 +141,7 @@ contract IssuanceVaultInvariantsTest is Test {
     function setUp() public {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(18);
-        oracle = new IndexOracle("GOLOGGLE / MUSD", 8, 2000, 1 hours, admin, publisher, guardian);
+        oracle = new IndexOracle("GOLOGGLE / MUSD", 8, 2000, 1 hours, 30, admin, publisher, guardian);
         vm.prank(publisher);
         oracle.publish(200e8);
 

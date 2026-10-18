@@ -87,7 +87,7 @@ contract FlashStakeTest is Test {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(18);
         mezo = new MockMUSD(18);
-        oracle = new IndexOracle("GOLOGGLE / MUSD", 8, 2000, 1 hours, admin, publisher, guardian);
+        oracle = new IndexOracle("GOLOGGLE / MUSD", 8, 2000, 1 hours, 30, admin, publisher, guardian);
         vm.prank(publisher);
         oracle.publish(100e8);
 

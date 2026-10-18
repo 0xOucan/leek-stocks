@@ -22,20 +22,39 @@ contract IndexOracleTest is Test {
     uint8 constant DECIMALS = 8;
     uint16 constant MAX_DEVIATION_BPS = 1000; // 10%
     uint32 constant MAX_STALENESS = 1 hours;
+    /// Seconds the oracle requires between rounds. See IndexOracle.
+    uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
     int256 constant FIRST = 100e8;
 
     event AnswerPublished(uint80 indexed roundId, int256 answer, uint256 updatedAt, address indexed publisher);
 
     function setUp() public {
         oracle = new IndexOracle(
-            "GOLOGGLE / MUSD", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, admin, publisher, guardian
+            "GOLOGGLE / MUSD", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian
         );
         // Timestamps start at 1 in Foundry; move clear of zero so that
         // "updatedAt == 0 means no round" cannot be satisfied accidentally.
         vm.warp(1_700_000_000);
     }
 
+    /**
+     * Publish, advancing the clock past the round interval first.
+     *
+     * The oracle now requires `minRoundInterval` between rounds, so a test
+     * that publishes twice in one block is testing an impossible sequence.
+     * The interval exists because the deviation bound is per round: without
+     * it, five rounds in one transaction compound 20% into 2.49x and the same
+     * transaction can buy before and redeem after. See
+     * test/AdminTheft.t.sol.
+     */
     function _publish(int256 answer) internal returns (uint80) {
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
+        vm.prank(publisher);
+        return oracle.publish(answer);
+    }
+
+    /// Publish without advancing, for the tests that assert the refusal.
+    function _publishNow(int256 answer) internal returns (uint80) {
         vm.prank(publisher);
         return oracle.publish(answer);
     }
@@ -44,22 +63,32 @@ contract IndexOracleTest is Test {
 
     function test_constructor_rejectsNonsense() public {
         vm.expectRevert(IndexOracle.ZeroAddress.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, address(0), publisher, guardian);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, address(0), publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", 19, MAX_DEVIATION_BPS, MAX_STALENESS, admin, publisher, guardian);
+        new IndexOracle("x", 19, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, 0, MAX_STALENESS, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, 0, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, 10_001, MAX_STALENESS, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, 10_001, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, 0, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, 0, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+
+        // A zero interval would permit a burst of rounds in one block, which
+        // is what compounds the deviation bound into a price attack.
+        vm.expectRevert(IndexOracle.InvalidParameter.selector);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, 0, admin, publisher, guardian);
+
+        // An interval at or above staleness makes the feed stale before the
+        // next round is even permitted.
+        vm.expectRevert(IndexOracle.InvalidParameter.selector);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MAX_STALENESS, admin, publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, admin, publisher, guardian);
+        new IndexOracle("", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
     }
 
     /* ----------------------------------------------------- empty feed */
@@ -76,9 +105,13 @@ contract IndexOracleTest is Test {
     /* ------------------------------------------------------- publishing */
 
     function test_publishEmitsAndRecords() public {
+        // Warp before the expectation, not inside the publish helper: the
+        // event carries block.timestamp, so the expected value has to be read
+        // at the same clock the publish will see.
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
         vm.expectEmit(true, true, false, true, address(oracle));
         emit AnswerPublished(1, FIRST, block.timestamp, publisher);
-        uint80 id = _publish(FIRST);
+        uint80 id = _publishNow(FIRST);
         assertEq(id, 1);
 
         (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredIn) =
@@ -141,6 +174,10 @@ contract IndexOracleTest is Test {
 
         // A hair past the bound from 110 is refused.
         int256 tooHigh = 110e8 + (110e8 * int256(uint256(MAX_DEVIATION_BPS)) / 10_000) + 1;
+        // Past the interval, so the refusal below is the deviation bound and
+        // not the round interval. Both guards reject this publish; the test is
+        // about the second one.
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
         vm.prank(publisher);
         vm.expectRevert(
             abi.encodeWithSelector(IndexOracle.DeviationTooLarge.selector, 110e8, tooHigh, MAX_DEVIATION_BPS)
@@ -149,6 +186,7 @@ contract IndexOracleTest is Test {
 
         // And downward: a collapse to a tenth is refused, which is the shape of
         // the fat-finger that liquidates everyone.
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
         vm.prank(publisher);
         vm.expectRevert(
             abi.encodeWithSelector(IndexOracle.DeviationTooLarge.selector, 110e8, int256(11e8), MAX_DEVIATION_BPS)
@@ -173,6 +211,8 @@ contract IndexOracleTest is Test {
         int256 difference = next > start ? next - start : start - next;
         bool withinBound = difference * 10_000 <= start * int256(uint256(MAX_DEVIATION_BPS));
 
+        // Isolate the deviation bound from the round interval.
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
         vm.prank(publisher);
         if (withinBound) {
             oracle.publish(next);

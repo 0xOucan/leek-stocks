@@ -152,7 +152,9 @@ contract ETFFactory is AccessControl {
             config.guardian,
             config.treasurer
         );
-        ETFShare shareToken = new ETFShare(name, symbol, admin, address(vault));
+        // The cap goes to the share token as well as to the vault, so the
+        // supply bound holds whoever is minting. See ETFShare's notes.
+        ETFShare shareToken = new ETFShare(name, symbol, admin, address(vault), config.maxShares);
 
         // Registry written before the calls into the new vault. Those calls
         // are to a contract deployed two lines above, so re-entry is not

@@ -34,6 +34,8 @@ contract IssuanceVaultTest is Test {
     uint8 constant MUSD_DECIMALS = 18;
     uint8 constant FEED_DECIMALS = 8;
     uint32 constant STALENESS = 1 hours;
+    /// Seconds the oracle requires between rounds. See IndexOracle.
+    uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
     uint16 constant FEE_BPS = 50; // 0.5%
     /* Half of every fee stays in reserves: the funded backstop (H-1a). 50% in
        tests so both halves of the split are non-zero and a rounding error in
@@ -45,7 +47,7 @@ contract IssuanceVaultTest is Test {
     function setUp() public {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(MUSD_DECIMALS);
-        oracle = new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, admin, publisher, guardian);
+        oracle = new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
         vm.prank(publisher);
         oracle.publish(PRICE);
 
@@ -218,6 +220,7 @@ contract IssuanceVaultTest is Test {
         uint256 shares = vault.buy(1000e18, 0);
 
         // +20% in one round, which the oracle's bound allows.
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
         vm.prank(publisher);
         oracle.publish(240e8);
 
@@ -252,6 +255,7 @@ contract IssuanceVaultTest is Test {
         assertEq(vault.reserves(), 997.5e18);
         assertGt(vault.coverageBps(), 10_000, "a buy must not leave coverage short");
 
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
         vm.prank(publisher);
         oracle.publish(240e8);
         assertGt(vault.liabilities(), vault.reserves(), "a rally must show as a shortfall");
@@ -354,6 +358,9 @@ contract IssuanceVaultTest is Test {
             } else {
                 next = current - target > maxStep ? current - maxStep : target;
             }
+            // The oracle requires time between rounds now, so a ratchet is
+            // a sequence in time rather than a burst in one block.
+            vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
             vm.prank(publisher);
             oracle.publish(next);
             current = next;

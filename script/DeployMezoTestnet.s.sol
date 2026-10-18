@@ -80,6 +80,18 @@ contract DeployMezoTestnet is Script {
     uint8 constant FEED_DECIMALS = 8; // Chainlink's USD convention
     uint16 constant MAX_DEVIATION_BPS = 2000; // 20% per round, immutable once set
     uint32 constant MAX_STALENESS = 1 hours;
+    /**
+     * @dev Seconds between rounds, enforced by the oracle.
+     *
+     *      Short enough not to interfere with the feed, which attempts a
+     *      publish every 60s, and long enough that a burst of rounds cannot
+     *      share a block. That atomicity is the whole attack: five rounds in
+     *      one transaction compound the 20% bound to 2.49x and let the same
+     *      transaction buy before and redeem after. Any non-zero interval
+     *      breaks it; 30s also gives a guardian minutes rather than one
+     *      block to react to a ratchet.
+     */
+    uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
 
     /* --------------------------------------------------------- vault parameters */
 
@@ -282,7 +294,7 @@ contract DeployMezoTestnet is Script {
         returns (IndexOracle oracle)
     {
         oracle = new IndexOracle(
-            feedDescription, FEED_DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, deployer, deployer, deployer
+            feedDescription, FEED_DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, deployer, deployer, deployer
         );
         oracle.publish(firstAnswer);
 

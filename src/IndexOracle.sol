@@ -60,6 +60,38 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
     /// @notice Age, in seconds, past which consumers must treat an answer as stale.
     uint32 public immutable maxStaleness;
 
+    /**
+     * @notice Seconds that must pass between two rounds.
+     *
+     * @dev Without this the deviation bound bounds nothing useful. It is a
+     *      per-round limit, so five rounds in one block compound it: 20% a
+     *      round takes a price from 100 to 248.83 inside a single
+     *      transaction, and test/AdminTheft.t.sol buys before and redeems
+     *      after for 2.46x out of other holders' reserves. The guardian can
+     *      pause the feed, but only after seeing it, and none of that is
+     *      visible until the block is mined.
+     *
+     *      With an interval the per-round bound becomes a bound per unit of
+     *      time, which is the thing a guardian can actually react inside.
+     *      Immutable for the same reason as `maxDeviationBps`: a publisher
+     *      who could shorten it could undo it.
+     */
+    uint32 public immutable minRoundInterval;
+
+    /**
+     * @notice Largest answer this feed will accept, in its own decimals.
+     *
+     * @dev The first round is exempt from the deviation bound by design, so
+     *      it was the one answer with no bound of any kind. A first answer of
+     *      1e75 makes every later `publish` overflow `previous * 10_000` and
+     *      there is no way to reset a round or lower `_latestRound`, so the
+     *      feed would be bricked permanently by one mistyped number. Bounding
+     *      the magnitude on every publish closes that and also keeps the
+     *      consuming vault's `shares * price * feeBps * reserveShareBps`
+     *      product far from overflowing.
+     */
+    int256 public constant MAX_ANSWER = 1e30;
+
     /* ----------------------------------------------------------------- state */
 
     struct Round {
@@ -83,6 +115,8 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
     /* ---------------------------------------------------------------- errors */
 
     error NotPositive(int256 answer);
+    error AnswerTooLarge(int256 answer);
+    error TooSoon(uint256 elapsed, uint32 required);
     error DeviationTooLarge(int256 previous, int256 proposed, uint16 maxBps);
     error FeedPaused();
     error NoData();
@@ -104,6 +138,7 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
         uint8 decimals_,
         uint16 maxDeviationBps_,
         uint32 maxStaleness_,
+        uint32 minRoundInterval_,
         address admin,
         address publisher,
         address guardian
@@ -115,12 +150,17 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
         if (decimals_ == 0 || decimals_ > 18) revert InvalidParameter();
         if (maxDeviationBps_ == 0 || maxDeviationBps_ > 10_000) revert InvalidParameter();
         if (maxStaleness_ == 0) revert InvalidParameter();
+        /* The interval has to leave room for a publisher to actually publish
+           inside the staleness window: an interval at or above staleness
+           means the feed is stale before the next round is permitted. */
+        if (minRoundInterval_ == 0 || minRoundInterval_ >= maxStaleness_) revert InvalidParameter();
         if (bytes(description_).length == 0) revert InvalidParameter();
 
         _description = description_;
         decimals = decimals_;
         maxDeviationBps = maxDeviationBps_;
         maxStaleness = maxStaleness_;
+        minRoundInterval = minRoundInterval_;
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(PUBLISHER_ROLE, publisher);
@@ -139,9 +179,16 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
     function publish(int256 answer) external onlyRole(PUBLISHER_ROLE) returns (uint80 roundId) {
         if (paused) revert FeedPaused();
         if (answer <= 0) revert NotPositive(answer);
+        // Bounded on every round including the first: see MAX_ANSWER.
+        if (answer > MAX_ANSWER) revert AnswerTooLarge(answer);
 
         uint80 previousRound = _latestRound;
         if (previousRound != 0) {
+            // The interval, before the deviation check, so a rejected burst
+            // reverts for the honest reason rather than the derived one.
+            uint256 elapsed = block.timestamp - _rounds[previousRound].updatedAt;
+            if (elapsed < minRoundInterval) revert TooSoon(elapsed, minRoundInterval);
+
             int256 previous = _rounds[previousRound].answer;
             // Basis points, multiplied before divided: no floats, no truncation
             // of the bound itself. |answer - previous| * 10000 <= previous * bps

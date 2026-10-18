@@ -44,6 +44,8 @@ contract MezoForkTest is Test {
 
     uint8 constant FEED_DECIMALS = 8; // Chainlink's USD convention
     uint32 constant STALENESS = 1 hours;
+    /// Seconds the oracle requires between rounds. See IndexOracle.
+    uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
     uint16 constant FEE_BPS = 50; // 0.5%
     uint256 constant CAP = 1_000_000e18;
     int256 constant PRICE = 200e8; // 200 MUSD per whole share
@@ -205,7 +207,7 @@ contract MezoForkTest is Test {
 
     function _deployPair() internal returns (IssuanceVault vault, ETFShare share) {
         IndexOracle oracle =
-            new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, admin, publisher, guardian);
+            new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
         vm.prank(publisher);
         oracle.publish(PRICE);
 
