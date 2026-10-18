@@ -165,12 +165,32 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     uint256 public immutable cooldown;
 
     /**
-     * @notice When each account's balance last increased.
-     * @dev Written in `_update` for the receiving side of every mint and
-     *      transfer, so there is one definition of "when this position
-     *      started" and it cannot be bypassed by routing through a transfer.
+     * @notice The timestamp from which each account may unstake.
+     *
+     * @dev Extended on an increase **in proportion to how much the balance
+     *      grew**, which is the fix for a griefing vector the first version
+     *      of this cooldown created.
+     *
+     *      Resetting the clock outright on any increase meant anybody could
+     *      send one wei of sMEZO to a staker who had finished waiting and
+     *      restart their full cooldown, repeatably, for dust. The position
+     *      was never at risk, but the holder could be kept from leaving
+     *      indefinitely by a stranger.
+     *
+     *      So the extension is `cooldown * value / balanceAfter`:
+     *
+     *        - a fresh recipient has `value == balanceAfter` and waits the
+     *          full cooldown, which is what stops a transferred receipt
+     *          arriving already eligible;
+     *        - one wei into a large position extends by effectively nothing,
+     *          so the grief costs the griefer and buys them nothing;
+     *        - doubling a position adds half a cooldown, so adding size
+     *          immediately before a distribution is not free.
+     *
+     *      `max` with the existing value, so an increase can only ever push
+     *      the deadline later.
      */
-    mapping(address => uint256) public lastIncrease;
+    mapping(address => uint256) public coolingUntil;
 
     /**
      * @notice A fee discount earned by staking at least `minStake`.
@@ -195,7 +215,7 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     error TooManyTiers(uint256 count);
     error DiscountTooHigh(uint16 discountBps);
     error TiersNotAscending(uint256 index);
-    error StillCooling(uint256 elapsed, uint256 required);
+    error StillCooling(uint256 secondsRemaining);
     error SameToken();
     error SelfTransfer();
 
@@ -263,8 +283,8 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     function unstake(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
 
-        uint256 elapsed = block.timestamp - lastIncrease[msg.sender];
-        if (elapsed < cooldown) revert StillCooling(elapsed, cooldown);
+        uint256 until_ = coolingUntil[msg.sender];
+        if (block.timestamp < until_) revert StillCooling(until_ - block.timestamp);
 
         _burn(msg.sender, amount);
         /*
@@ -381,7 +401,7 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
            transaction was a discount for rent, not a discount for holding.
            The receipt being transferable made it worse: the same stake could
            grant the top tier to any number of traders, one per transaction. */
-        if (block.timestamp - lastIncrease[account] < cooldown) return 0;
+        if (block.timestamp < coolingUntil[account]) return 0;
 
         uint256 staked = balanceOf(account);
         uint16 discount = 0;
@@ -539,10 +559,16 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
         if (from != address(0)) rewardDebt[from] = (balanceOf(from) * accMusdPerShare) / ACC_PRECISION;
         if (to != address(0)) {
             rewardDebt[to] = (balanceOf(to) * accMusdPerShare) / ACC_PRECISION;
-            /* Any increase restarts the clock, mint or transfer alike. A
-               top-up immediately before a distribution would otherwise be
-               free, and a received receipt would arrive already eligible. */
-            lastIncrease[to] = block.timestamp;
+            /* Extend in proportion to the increase. See `coolingUntil`:
+               resetting outright let a stranger block a staker's exit with
+               one wei, and not extending at all let a receipt arrive already
+               eligible. `balanceAfter` is non-zero here because `value` was
+               just added to it. */
+            uint256 balanceAfter = balanceOf(to);
+            if (balanceAfter != 0) {
+                uint256 deadline = block.timestamp + (cooldown * value) / balanceAfter;
+                if (deadline > coolingUntil[to]) coolingUntil[to] = deadline;
+            }
         }
     }
 }

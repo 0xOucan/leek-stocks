@@ -143,7 +143,7 @@ contract FlashStakeTest is Test {
         assertGt(routed, 0, "no revenue was routed, the test proves nothing");
 
         // 3. The exit is refused: the position is still cooling.
-        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, 1 hours));
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 1 hours));
         attacker.exit(100_000_000 * ONE);
 
         // The capital is committed for the cooldown, which is the point. The
@@ -174,7 +174,7 @@ contract FlashStakeTest is Test {
         // reverts on the unstake, so the fee cannot be recovered within the
         // transaction that paid it. And the buy inside it pays the FULL fee,
         // because the discount is gated on the same cooldown.
-        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, 1 hours));
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 1 hours));
         attacker.tradeAtOwnExpense(100_000_000 * ONE, 1_000_000e18);
     }
 

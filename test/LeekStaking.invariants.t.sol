@@ -74,7 +74,7 @@ contract Handler is Test {
         if (held == 0) return;
         // Return early rather than revert when the position is still cooling,
         // so the fuzzer is not spending runs on a known-impossible action.
-        if (block.timestamp - staking.lastIncrease(actor) < staking.cooldown()) return;
+        if (block.timestamp < staking.coolingUntil(actor)) return;
         amount = bound(amount, 1, held);
         // unstake() pays out any earned MUSD as well as returning the stake,
         // so the revenue tally has to count it. Missing this made the

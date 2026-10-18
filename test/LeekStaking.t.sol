@@ -469,7 +469,7 @@ contract LeekStakingTest is Test {
     function test_unstakingBeforeTheCooldownIsRefused() public {
         _stake(alice, 100 * ONE);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, COOLDOWN));
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, COOLDOWN));
         staking.unstake(100 * ONE);
     }
 
@@ -477,7 +477,7 @@ contract LeekStakingTest is Test {
         _stake(alice, 100 * ONE);
         skip(COOLDOWN - 1);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, COOLDOWN - 1, COOLDOWN));
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 1));
         staking.unstake(100 * ONE);
 
         skip(1);
@@ -486,15 +486,25 @@ contract LeekStakingTest is Test {
         assertEq(staking.balanceOf(alice), 0);
     }
 
-    function test_aTopUpRestartsTheClockOnTheWholePosition() public {
-        // Otherwise a long-standing staker could add size immediately before
-        // a distribution and withdraw it immediately after.
+    function test_aTopUpExtendsTheClockInProportionToItsSize() public {
+        /* Not a full restart, which is the distinction that matters.
+           
+           Restarting outright let a stranger block a staker's exit with one
+           wei (test/CooldownGrief.t.sol). The extension is
+           `cooldown * value / balanceAfter`, so adding 1 MUSD to 100 adds
+           3600 * 1e18 / 101e18 = 35 seconds: enough that adding size before a
+           distribution is not free, little enough that dust is not a weapon. */
         _stake(alice, 100 * ONE);
         skip(COOLDOWN);
         _stake(alice, 1 * ONE);
 
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, COOLDOWN));
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 35));
+        staking.unstake(100 * ONE);
+
+        // And after those 35 seconds she can leave.
+        skip(35);
+        vm.prank(alice);
         staking.unstake(100 * ONE);
     }
 
