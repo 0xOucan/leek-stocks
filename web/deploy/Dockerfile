@@ -38,6 +38,11 @@ ARG VITE_VAULT_GOLOGGLE="0xF13f191F1eaB90E5331DA292dA922E3b797B1824"
 ARG VITE_VAULT_AMEZON="0x4b6C535b6d298fB8a51E3577d7037340359d18E1"
 ARG VITE_SHARE_GOLOGGLE="0xa4220DF063149aa750bd54bEf578b244a3bc9Be7"
 ARG VITE_SHARE_AMEZON="0x6c4A0dEcA88C51a27E91841E7017f1bE654769aD"
+# The staking contract and the MEZO token it takes. An empty VITE_STAKING
+# hides the staking panel entirely, so check-bundle.mjs requires it: a build
+# that lost this address fails rather than shipping a dapp with no staking.
+ARG VITE_STAKING="0x6b15c487471CcE6A088D292A2f3834942a60e998"
+ARG VITE_MEZO="0x7B7c000000000000000000000000000000000001"
 # The MUSD BorrowerOperations can mint, which is the only one a user can
 # obtain by borrowing. Mezo testnet has five contracts reporting MUSD with 18
 # decimals; see ADDRESSES.md for which and why this is the one.

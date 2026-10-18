@@ -194,8 +194,14 @@ staking, mezo = sys.argv[1], sys.argv[2]
 p = "web/deploy/Dockerfile"
 s = open(p).read()
 import re
-s = re.sub(r'ARG VITE_STAKING="[^"]*"', f'ARG VITE_STAKING="{staking}"', s)
-s = re.sub(r'ARG VITE_MEZO="[^"]*"', f'ARG VITE_MEZO="{mezo}"', s)
+# subn, not sub: the previous version substituted a line that did not exist
+# in the Dockerfile and printed success anyway, so a plain build baked an
+# empty VITE_STAKING and then failed its own check-bundle step.
+s, n_staking = re.subn(r'ARG VITE_STAKING="[^"]*"', f'ARG VITE_STAKING="{staking}"', s)
+s, n_mezo = re.subn(r'ARG VITE_MEZO="[^"]*"', f'ARG VITE_MEZO="{mezo}"', s)
+if n_staking != 1 or n_mezo != 1:
+    sys.exit(f"{p}: expected one ARG VITE_STAKING and one ARG VITE_MEZO line, "
+             f"found {n_staking} and {n_mezo}; the staking address was not recorded")
 open(p, "w").write(s)
 print(f"   {p}: VITE_STAKING={staking}, VITE_MEZO={mezo}")
 
