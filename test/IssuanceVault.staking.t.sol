@@ -48,7 +48,7 @@ contract IssuanceVaultStakingTest is Test {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(18);
         mezo = new MockMUSD(18);
-        oracle = new IndexOracle("GOLOGGLE / MUSD", 8, 2000, 1 hours, 30, admin, publisher, guardian);
+        oracle = new IndexOracle("GOLOGGLE / MUSD", 8, 2000, 1 hours, 30, 1 hours, 2000, admin, publisher, guardian);
         vm.prank(publisher);
         oracle.publish(PRICE);
 
@@ -452,7 +452,7 @@ contract IssuanceVaultStakingTest is Test {
         // shares against MUSD it did not receive would under-fund liabilities
         // from the first trade and compound the gap with volume.
         MockFeeToken fot = new MockFeeToken(100); // 1%
-        IndexOracle o = new IndexOracle("X / MUSD", 8, 2000, 1 hours, 30, admin, publisher, guardian);
+        IndexOracle o = new IndexOracle("X / MUSD", 8, 2000, 1 hours, 30, 1 hours, 2000, admin, publisher, guardian);
         vm.prank(publisher);
         o.publish(100e8);
 

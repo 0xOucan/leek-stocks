@@ -36,6 +36,10 @@ contract IssuanceVaultTest is Test {
     uint32 constant STALENESS = 1 hours;
     /// Seconds the oracle requires between rounds. See IndexOracle.
     uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
+    /// The cumulative bound from audit finding R4-6: 20% per hour in total,
+    /// however many in-bound rounds it takes to get there.
+    uint32 constant WINDOW = 1 hours;
+    uint16 constant WINDOW_BPS = 2000;
     uint16 constant FEE_BPS = 50; // 0.5%
     /* Half of every fee stays in reserves: the funded backstop (H-1a). 50% in
        tests so both halves of the split are non-zero and a rounding error in
@@ -47,7 +51,7 @@ contract IssuanceVaultTest is Test {
     function setUp() public {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(MUSD_DECIMALS);
-        oracle = new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+        oracle = new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
         vm.prank(publisher);
         oracle.publish(PRICE);
 
@@ -361,9 +365,15 @@ contract IssuanceVaultTest is Test {
             } else {
                 next = current - target > maxStep ? current - maxStep : target;
             }
-            // The oracle requires time between rounds now, so a ratchet is
-            // a sequence in time rather than a burst in one block.
-            vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
+            /* A whole window per step, not one round interval.
+               The oracle now bounds cumulative movement per window as well as
+               per round (audit finding R4-6), so a walk of several in-bound
+               steps inside one window is exactly what it refuses - this test
+               rejected itself when that bound landed, which is the bound
+               working. Warping a window moves the anchor, so each step here
+               is a fresh window's budget. It makes this helper's walk take
+               simulated hours, which is the point: on chain it would. */
+            vm.warp(block.timestamp + WINDOW);
             vm.prank(publisher);
             oracle.publish(next);
             current = next;

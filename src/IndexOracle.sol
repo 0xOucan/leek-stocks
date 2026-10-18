@@ -93,6 +93,53 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
     int256 public constant MAX_ANSWER = 1e30;
 
     /**
+     * @notice Length of the window the cumulative bound is measured over.
+     *
+     * @dev `maxDeviationBps` plus `minRoundInterval` bound the price per unit
+     *      of time, and audit finding R4-6 is that per unit of time is still
+     *      a ratchet: at 2000 bps every 30 seconds a compromised publisher
+     *      doubles the price in four rounds - **two minutes** - and
+     *      `maxStaleness` is an hour, so nothing goes stale while the walk
+     *      happens. The walk *is* fresh publishes. A guardian who is not
+     *      already watching has no brake at all.
+     *
+     *      So there is a second bound, measured not from the previous answer
+     *      but from an anchor that only refreshes once a window has elapsed.
+     *      Inside a window the price may move `maxWindowDeviationBps` in
+     *      total, however many rounds it takes. At one hour and 2000 bps,
+     *      doubling the price takes **11,010 seconds** - a little over three
+     *      hours - instead of 120 seconds. That figure is measured by
+     *      test/Ratchet.t.sol rather than reasoned about, and it is three
+     *      hours rather than four because of the window boundary described
+     *      under `maxWindowDeviationBps`. Either way it is time a human can
+     *      act in, which is the whole claim.
+     *
+     *      Immutable for the same reason as the other two: a publisher who
+     *      could lengthen the window or widen its budget could undo it.
+     */
+    uint32 public immutable deviationWindow;
+
+    /**
+     * @notice Total move, in basis points, permitted within one window.
+     *
+     * @dev Measured from `anchorAnswer`, not from the previous round, so a
+     *      sequence of small in-bound steps cannot add up to more than this.
+     *
+     *      **The honest limit of this design.** The window is fixed rather
+     *      than sliding, so a publisher can spend the whole budget at the end
+     *      of one window and the whole of the next budget immediately after
+     *      it rolls: worst case is twice this in a short span, at a boundary,
+     *      once. Every step after that costs a further window. A true sliding
+     *      bound needs the answer from exactly `deviationWindow` ago, which
+     *      means storing one entry per round - about 120 of them at a
+     *      30-second interval - and that cost is not worth buying the last
+     *      factor of two. Recorded here rather than left for a reader to
+     *      discover, because a bound whose worst case is undocumented is the
+     *      kind of thing this audit keeps finding.
+     */
+    uint16 public immutable maxWindowDeviationBps;
+
+    /**
      * @notice The smallest publishable answer, in feed decimals.
      *
      * @dev The mirror image of `MAX_ANSWER`, and it took a re-audit to see
@@ -131,9 +178,19 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
     /// @notice True while publishing is halted by a guardian.
     bool public paused;
 
+    /**
+     * @notice The answer the current window's budget is measured from.
+     * @dev Public so a monitor can compute the remaining budget itself rather
+     *      than trusting `windowBudget()` below to be the only reader.
+     */
+    int256 public anchorAnswer;
+    /// @notice When the current window began.
+    uint256 public anchorAt;
+
     /* ---------------------------------------------------------------- events */
 
     event AnswerPublished(uint80 indexed roundId, int256 answer, uint256 updatedAt, address indexed publisher);
+    event WindowAnchorMoved(int256 anchorAnswer, uint256 anchorAt);
     event Paused(address indexed guardian);
     event Unpaused(address indexed guardian);
 
@@ -144,6 +201,7 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
     error AnswerTooSmall(int256 answer);
     error TooSoon(uint256 elapsed, uint32 required);
     error DeviationTooLarge(int256 previous, int256 proposed, uint16 maxBps);
+    error WindowDeviationTooLarge(int256 anchor, int256 proposed, uint16 maxBps, uint32 window);
     error FeedPaused();
     error NoData();
     error AlreadyInThatState();
@@ -154,6 +212,8 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
      * @param description_ e.g. "GOLOGGLE / MUSD"
      * @param decimals_ answer decimals; 8 matches Chainlink's USD feeds
      * @param maxDeviationBps_ per-round move bound, 1-10000
+     * @param deviationWindow_ seconds the cumulative bound is measured over
+     * @param maxWindowDeviationBps_ total move permitted per window, 1-10000
      * @param maxStaleness_ seconds after which consumers must refuse an answer
      * @param admin role administrator; should not also publish
      * @param publisher the off-chain feed service
@@ -165,6 +225,8 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
         uint16 maxDeviationBps_,
         uint32 maxStaleness_,
         uint32 minRoundInterval_,
+        uint32 deviationWindow_,
+        uint16 maxWindowDeviationBps_,
         address admin,
         address publisher,
         address guardian
@@ -180,6 +242,14 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
            inside the staleness window: an interval at or above staleness
            means the feed is stale before the next round is permitted. */
         if (minRoundInterval_ == 0 || minRoundInterval_ >= maxStaleness_) revert InvalidParameter();
+        /*
+         * The window must be longer than one round interval, or it expires
+         * between rounds and bounds nothing - the degenerate configuration
+         * that would make this look implemented while doing nothing, which is
+         * worse than not having it.
+         */
+        if (deviationWindow_ <= minRoundInterval_) revert InvalidParameter();
+        if (maxWindowDeviationBps_ == 0 || maxWindowDeviationBps_ > 10_000) revert InvalidParameter();
         if (bytes(description_).length == 0) revert InvalidParameter();
 
         _description = description_;
@@ -187,6 +257,8 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
         maxDeviationBps = maxDeviationBps_;
         maxStaleness = maxStaleness_;
         minRoundInterval = minRoundInterval_;
+        deviationWindow = deviationWindow_;
+        maxWindowDeviationBps = maxWindowDeviationBps_;
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(PUBLISHER_ROLE, publisher);
@@ -230,6 +302,47 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
             if (difference > 1 && difference * 10_000 > previous * int256(uint256(maxDeviationBps))) {
                 revert DeviationTooLarge(previous, answer, maxDeviationBps);
             }
+
+            /*
+             * And last, the cumulative bound, measured from an anchor that
+             * only moves once a window has elapsed.
+             *
+             * Checked after the per-round bound deliberately, for the same
+             * reason the interval is checked before it: a publish should fail
+             * for the most immediate reason, not a derived one. If a single
+             * step is too large, that is the fact worth reporting. Only when
+             * every individual step is legal does "this window's budget is
+             * spent" become the real reason - and that is the case this bound
+             * exists for, because the attack it closes is a sequence of
+             * perfectly in-bound steps.
+             *
+             * Refreshed lazily here rather than by anyone having to call
+             * something: a window that only advances when somebody remembers
+             * to advance it is a window that stays open. It refreshes to
+             * `previous`, the last published answer, not to `answer`, so the
+             * budget is spent relative to where the feed was when the window
+             * opened.
+             */
+            if (block.timestamp - anchorAt >= deviationWindow) {
+                anchorAnswer = previous;
+                anchorAt = block.timestamp;
+                emit WindowAnchorMoved(previous, block.timestamp);
+            }
+            int256 fromAnchor = answer > anchorAnswer ? answer - anchorAnswer : anchorAnswer - answer;
+            // The same one-unit allowance as the per-round bound, so this one
+            // cannot be arithmetically unsatisfiable either.
+            if (fromAnchor > 1 && fromAnchor * 10_000 > anchorAnswer * int256(uint256(maxWindowDeviationBps))) {
+                revert WindowDeviationTooLarge(anchorAnswer, answer, maxWindowDeviationBps, deviationWindow);
+            }
+        }
+
+        if (previousRound == 0) {
+            // The first round opens the first window. Exempt from both bounds
+            // because there is nothing to measure from, which is the same
+            // reason MIN_ANSWER and MAX_ANSWER exist.
+            anchorAnswer = answer;
+            anchorAt = block.timestamp;
+            emit WindowAnchorMoved(answer, block.timestamp);
         }
 
         roundId = previousRound + 1;

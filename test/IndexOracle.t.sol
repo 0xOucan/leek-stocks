@@ -24,13 +24,16 @@ contract IndexOracleTest is Test {
     uint32 constant MAX_STALENESS = 1 hours;
     /// Seconds the oracle requires between rounds. See IndexOracle.
     uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
+    /// The cumulative bound from audit finding R4-6.
+    uint32 constant WINDOW = 1 hours;
+    uint16 constant WINDOW_BPS = 2000;
     int256 constant FIRST = 100e8;
 
     event AnswerPublished(uint80 indexed roundId, int256 answer, uint256 updatedAt, address indexed publisher);
 
     function setUp() public {
         oracle = new IndexOracle(
-            "GOLOGGLE / MUSD", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian
+            "GOLOGGLE / MUSD", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian
         );
         // Timestamps start at 1 in Foundry; move clear of zero so that
         // "updatedAt == 0 means no round" cannot be satisfied accidentally.
@@ -63,32 +66,54 @@ contract IndexOracleTest is Test {
 
     function test_constructor_rejectsNonsense() public {
         vm.expectRevert(IndexOracle.ZeroAddress.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, address(0), publisher, guardian);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, address(0), publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", 19, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+        new IndexOracle("x", 19, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, 0, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, 0, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, 10_001, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, 10_001, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, 0, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, 0, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
 
         // A zero interval would permit a burst of rounds in one block, which
         // is what compounds the deviation bound into a price attack.
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, 0, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, 0, WINDOW, WINDOW_BPS, admin, publisher, guardian);
 
         // An interval at or above staleness makes the feed stale before the
         // next round is even permitted.
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MAX_STALENESS, admin, publisher, guardian);
+        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MAX_STALENESS, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+
+        /* A window no longer than one round interval expires between rounds
+           and therefore bounds nothing. That configuration would make the
+           cumulative bound look implemented while doing nothing, which is
+           worse than not having it. */
+        vm.expectRevert(IndexOracle.InvalidParameter.selector);
+        new IndexOracle(
+            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL,
+            MIN_ROUND_INTERVAL, WINDOW_BPS, admin, publisher, guardian
+        );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+        new IndexOracle(
+            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL,
+            WINDOW, 0, admin, publisher, guardian
+        );
+
+        vm.expectRevert(IndexOracle.InvalidParameter.selector);
+        new IndexOracle(
+            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL,
+            WINDOW, 10_001, admin, publisher, guardian
+        );
+
+        vm.expectRevert(IndexOracle.InvalidParameter.selector);
+        new IndexOracle("", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
     }
 
     /* ----------------------------------------------------- empty feed */
@@ -171,6 +196,13 @@ contract IndexOracleTest is Test {
 
         // Exactly at the bound is allowed: 10% of 100 is 110.
         _publish(110e8);
+
+        /* Past the window, so what follows is measured against the per-round
+           bound from 110 rather than against the window's budget from 100.
+           Without this the cumulative bound rejects the next publish first
+           and the test asserts the wrong error - which is how it failed when
+           that bound landed. */
+        vm.warp(block.timestamp + WINDOW);
 
         // A hair past the bound from 110 is refused.
         int256 tooHigh = 110e8 + (110e8 * int256(uint256(MAX_DEVIATION_BPS)) / 10_000) + 1;
@@ -265,8 +297,12 @@ contract IndexOracleTest is Test {
         // `|| difference <= 1`: a one-unit step is permitted unconditionally.
         bool withinBound = difference <= 1 || difference * 10_000 <= start * int256(uint256(MAX_DEVIATION_BPS));
 
-        // Isolate the deviation bound from the round interval.
-        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
+        /* Isolate the per-round bound from the round interval AND from the
+           cumulative window bound: a whole window moves the anchor to
+           `start`, after which the window permits WINDOW_BPS from start and
+           the round permits MAX_DEVIATION_BPS from start, so the tighter
+           per-round bound is the one under test. */
+        vm.warp(block.timestamp + WINDOW);
         vm.prank(publisher);
         if (withinBound) {
             oracle.publish(next);

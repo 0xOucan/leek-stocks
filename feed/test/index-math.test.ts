@@ -89,9 +89,15 @@ const BASE = {
   heartbeatSeconds: 1800,
   maxDeviationBps: 2000,
   // Neutral in the cases below, which are about the threshold, the heartbeat
-  // and the bound. The cooldown and the floor have their own tests.
+  // and the per-round bound. The cooldown, the floor and the cumulative
+  // window bound each have their own tests.
   minRoundInterval: 0,
   minAnswer: 1n,
+  // 10000 bps is 100%, so the window never binds unless a test says so.
+  anchorAnswer: 0n,
+  maxWindowDeviationBps: 10_000,
+  secondsSinceAnchor: 0,
+  deviationWindow: 3_600,
 };
 
 test("the first round always publishes", () => {
@@ -203,4 +209,72 @@ test("the per-round bound is never zero, so a small answer is not absorbing", ()
   const decision = decidePublish({ ...BASE, target: 1_000n, last: 4n, secondsSinceLast: 10 });
   assert.equal(decision.publish, true);
   assert.equal(decision.answer, 5n, "the bound must permit at least a one-unit step");
+});
+
+test("the cumulative window bound is mirrored, so the feed does not send a reverting publish", () => {
+  /* Audit finding R4-6 put a second bound on chain: total movement from an
+   * anchor, per window. Without mirroring it here the service would send a
+   * perfectly in-bound step the oracle rejects with
+   * WindowDeviationTooLarge, every tick, for the rest of the window - the
+   * same self-inflicted error minRoundInterval produced before it was
+   * mirrored. */
+  const decision = decidePublish({
+    ...BASE,
+    target: 13_000n,
+    last: 11_500n,          // already 15% above the anchor
+    anchorAnswer: 10_000n,
+    maxWindowDeviationBps: 2_000, // 20% for the whole window
+    secondsSinceAnchor: 60,       // the window has not rolled
+    deviationWindow: 3_600,
+    secondsSinceLast: 60,
+  });
+  assert.equal(decision.publish, true);
+  assert.equal(decision.answer, 12_000n, "the answer must stop at the window's budget, not the round's");
+  assert.match(decision.reason, /window budget/);
+});
+
+test("the window's budget is measured from the last answer when the window is rolling", () => {
+  /* The anchor refreshes lazily inside publish, so the budget available to
+   * the next publish is measured from `last` once the window has elapsed.
+   * Reading this the other way round would cost a revert. */
+  const decision = decidePublish({
+    ...BASE,
+    target: 13_800n,
+    last: 11_500n,
+    anchorAnswer: 10_000n,
+    maxWindowDeviationBps: 2_000,
+    secondsSinceAnchor: 3_600, // rolling: the anchor becomes `last`
+    deviationWindow: 3_600,
+    secondsSinceLast: 60,
+  });
+  assert.equal(decision.answer, 13_800n, "a fresh window's budget from 11500 reaches 13800");
+});
+
+test("a small in-bound step inside a spent window is held, not sent", () => {
+  // Already at the ceiling: there is nothing left to move.
+  const decision = decidePublish({
+    ...BASE,
+    target: 20_000n,
+    last: 12_000n,
+    anchorAnswer: 10_000n,
+    maxWindowDeviationBps: 2_000,
+    secondsSinceAnchor: 100,
+    deviationWindow: 3_600,
+    secondsSinceLast: 60,
+  });
+  assert.equal(decision.answer, 12_000n, "the budget is spent, so the answer cannot move");
+});
+
+test("the window bound applies downward too", () => {
+  const decision = decidePublish({
+    ...BASE,
+    target: 1_000n,
+    last: 10_000n,
+    anchorAnswer: 10_000n,
+    maxWindowDeviationBps: 2_000,
+    secondsSinceAnchor: 100,
+    deviationWindow: 3_600,
+    secondsSinceLast: 60,
+  });
+  assert.equal(decision.answer, 8_000n, "a crash must walk down by the window budget, not the round bound");
 });

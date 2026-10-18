@@ -133,9 +133,19 @@ export function decidePublish(args: {
   readonly minRoundInterval: number;
   /** The oracle's floor, in feed units. Answers below it revert. */
   readonly minAnswer: bigint;
+  /**
+   * The cumulative bound: the answer this window's budget is measured from,
+   * and the budget. `anchorAnswer` of 0 means there is no window yet.
+   */
+  readonly anchorAnswer: bigint;
+  readonly maxWindowDeviationBps: number;
+  /** Seconds since the window opened, and how long a window lasts. */
+  readonly secondsSinceAnchor: number;
+  readonly deviationWindow: number;
 }): PublishDecision {
   const { target, last, secondsSinceLast, thresholdBps, heartbeatSeconds, maxDeviationBps } = args;
   const { minRoundInterval, minAnswer } = args;
+  const { anchorAnswer, maxWindowDeviationBps, secondsSinceAnchor, deviationWindow } = args;
   if (target <= 0n) throw new Error("target must be positive");
   if (last === null || last === 0n) {
     /* Clamped up to the floor even on the first round. A first answer below
@@ -168,16 +178,44 @@ export function decidePublish(args: {
   const divided = (last * BigInt(maxDeviationBps)) / 10_000n;
   const bound = divided > 0n ? divided : 1n;
   const stepped = difference > bound ? (target > last ? last + bound : last - bound) : target;
-  // Never below the floor, whatever the step arithmetic says.
-  const clamped = stepped < minAnswer ? minAnswer : stepped;
+
+  /* And the cumulative bound, which the per-round clamp above knows nothing
+   * about. Audit finding R4-6 added a second bound on chain: total movement
+   * from an anchor, per window. Without mirroring it here the service would
+   * send a perfectly in-bound step that the oracle rejects with
+   * WindowDeviationTooLarge, every tick, for the rest of the window - a
+   * self-inflicted error that reads in /prices as an RPC fault, which is
+   * exactly how `minRoundInterval` behaved before it was mirrored.
+   *
+   * The anchor on chain refreshes lazily, inside `publish`, once the window
+   * has elapsed. So the budget available to the NEXT publish is measured
+   * from `last` when the window is about to roll, and from `anchorAnswer`
+   * when it is not. Getting this wrong in the safe direction only costs a
+   * held publish; getting it wrong the other way costs a revert. */
+  const windowRolls = secondsSinceAnchor >= deviationWindow;
+  const effectiveAnchor = windowRolls || anchorAnswer <= 0n ? last : anchorAnswer;
+  const windowDivided = (effectiveAnchor * BigInt(maxWindowDeviationBps)) / 10_000n;
+  const windowBound = windowDivided > 0n ? windowDivided : 1n;
+  const windowLow = effectiveAnchor - windowBound;
+  const windowHigh = effectiveAnchor + windowBound;
+
+  const inWindow = stepped > windowHigh ? windowHigh : stepped < windowLow ? windowLow : stepped;
+
+  // Never below the floor, whatever either clamp said.
+  const clamped = inWindow < minAnswer ? minAnswer : inWindow;
   const wasClamped = clamped !== target;
 
   if (movedBps >= BigInt(thresholdBps)) {
+    /* Which bound bit, named. "Clamped" without saying by what sent an
+     * operator reading /prices to the wrong one of two bounds. */
+    const by = clamped !== inWindow
+      ? `the oracle's floor`
+      : inWindow !== stepped
+        ? `the oracle's ${maxWindowDeviationBps} bps-per-${deviationWindow}s window budget`
+        : `the oracle's ${maxDeviationBps} bps per-round bound`;
     return {
       publish: true,
-      reason: wasClamped
-        ? `moved ${movedBps} bps, clamped to the oracle's ${maxDeviationBps} bps bound`
-        : `moved ${movedBps} bps`,
+      reason: wasClamped ? `moved ${movedBps} bps, clamped to ${by}` : `moved ${movedBps} bps`,
       answer: clamped,
     };
   }

@@ -353,7 +353,7 @@ export function mount(): void {
          a crypto basket has to say which it is at the point of sale. */
       el("p", { class: "muted small" }, [
         el("strong", {}, ["These are not stocks."]),
-        " GOLOGGLE and AMEZON are parodies, and they track baskets of cryptoassets priced from CoinGecko \u2014 ethereum, chainlink and filecoin for one, solana, avalanche and uniswap for the other. Neither contains, references or derives from any company\u2019s shares, and neither is a security.",
+        " GOLOGGLE and AMEZON are invented names, and they track baskets of cryptoassets priced from CoinGecko \u2014 ethereum, chainlink and filecoin for one, solana, avalanche and uniswap for the other. Neither contains, references or derives from any company\u2019s shares, and neither is a security.",
       ]),
       el("p", {}, [
         // Named rather than linked: the lending market is not deployed, and a

@@ -46,6 +46,10 @@ contract MezoForkTest is Test {
     uint32 constant STALENESS = 1 hours;
     /// Seconds the oracle requires between rounds. See IndexOracle.
     uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
+    /// The cumulative bound from audit finding R4-6: 20% per hour in total,
+    /// however many in-bound rounds it takes to get there.
+    uint32 constant WINDOW = 1 hours;
+    uint16 constant WINDOW_BPS = 2000;
     uint16 constant FEE_BPS = 50; // 0.5%
     uint256 constant CAP = 1_000_000e18;
     int256 constant PRICE = 200e8; // 200 MUSD per whole share
@@ -207,7 +211,7 @@ contract MezoForkTest is Test {
 
     function _deployPair() internal returns (IssuanceVault vault, ETFShare share) {
         IndexOracle oracle =
-            new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, admin, publisher, guardian);
+            new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
         vm.prank(publisher);
         oracle.publish(PRICE);
 

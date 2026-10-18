@@ -286,6 +286,13 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      transfer and the mint are both after every validation, and the only
      *      untrusted call is to MUSD itself.
      */
+    /*
+       The same balance-delta measurement as LeekStaking.stake, and for the
+       same reason: minting shares against MUSD that never arrived would
+       under-fund liabilities from the first trade and compound with volume
+       (audit L-2). `buy`, `redeem`, `fund` and `withdrawFees` all carry the
+       one contract-wide reentrancy lock, so there is no path back in. */
+    // slither-disable-next-line reentrancy-balance
     function buy(uint256 musdAmount, uint256 minShares) external nonReentrant returns (uint256 sharesOut) {
         if (paused) revert VaultPaused();
         if (musdAmount == 0) revert ZeroAmount();
@@ -567,6 +574,12 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      the contract notes. The share burn happens before the payout, so a
      *      token that re-enters on transfer finds the supply already reduced.
      */
+    /*
+       `_routeRevenue` credits `feesAccrued` after its bounded calls because
+       that credit is the FALLBACK for the calls not having worked - it exists
+       precisely for that case and cannot precede it. nonReentrant holds
+       throughout. */
+    // slither-disable-next-line reentrancy-no-eth
     function redeem(uint256 shares, uint256 minMusd) public nonReentrant returns (uint256 musdOut) {
         if (paused) revert VaultPaused();
         if (shares == 0) revert ZeroAmount();

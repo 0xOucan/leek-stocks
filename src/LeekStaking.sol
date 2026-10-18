@@ -259,6 +259,19 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
      *      contract holds and break the supply-equals-stake invariant on the
      *      last staker out.
      */
+    /*
+       reentrancy-balance: the balance is read before and after the transfer
+       because the DELTA is the point - a fee-on-transfer MEZO would otherwise
+       credit sMEZO for tokens that never arrived (audit L-2, MockFeeToken).
+       Slither sees the shape of a stale-balance bug and this is the shape of
+       the fix for one. Not reachable: OpenZeppelin's guard is one lock per
+       contract and every state-changing function here carries it, so there
+       is no sibling to re-enter through. Direction matters too - a reentrant
+       withdrawal understates `received` and REVERTS; only a reentrant deposit
+       could overstate it, and the only path that deposits holds the lock.
+       incorrect-equality: `received == 0` is an amount, not a balance. The
+       detector exists for `balanceOf(x) == y`, which a donation breaks. */
+    // slither-disable-next-line reentrancy-balance,incorrect-equality
     function stake(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
 
@@ -305,6 +318,10 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     }
 
     /// @notice Take the MUSD earned so far without touching the stake.
+    /*
+       `paid == 0` is a payout amount, not a balance: nothing an outsider can
+       transfer in changes it. */
+    // slither-disable-next-line incorrect-equality
     function claim() external nonReentrant returns (uint256 paid) {
         /*
          * Gated on the same clock as `unstake`.
@@ -342,6 +359,17 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
      *      Reverts on an empty stake rather than distributing: see the
      *      contract notes on the empty state.
      */
+    /*
+       divide-before-multiply is DELIBERATE and load-bearing here, and
+       removing it reintroduces audit finding R2-9. `distributed` has to be
+       the amount the FLOORED `perShare` actually credits, so the remainder
+       can go to `unallocated` instead of being measured as new revenue on the
+       next call and credited twice. Computing it without the round trip
+       through the division would make it disagree with what holders can
+       claim, which is the bug.
+       incorrect-equality: `incoming == 0` is a measured delta, not a
+       balance comparison. */
+    // slither-disable-next-line divide-before-multiply,incorrect-equality
     function notifyReward() public nonReentrant returns (uint256 distributed) {
         uint256 supply = totalSupply();
         if (supply == 0) revert NoStakers();
@@ -500,6 +528,16 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
      *      a claim that silently does nothing is worse than one that reverts
      *      and says why.
      */
+    /*
+       reentrancy-no-eth: the writes after the external call are the FAILURE
+       bookkeeping - restoring `rewardsOwed` and crediting `claimable` when
+       the token refused - which can only happen after the call because they
+       are conditional on its result. The only caller is `unstake`, which is
+       nonReentrant.
+       incorrect-equality: `owed == 0`, `payable_ == 0` and `ret.length == 0`
+       are an amount, an amount and a returndata length. The last one is
+       SafeERC20's own tolerance for a token that returns nothing. */
+    // slither-disable-next-line reentrancy-no-eth,incorrect-equality
     function _tryPayout(address account) private {
         uint256 owed = claimable[account];
         if (owed == 0) return;
@@ -546,6 +584,10 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
         }
     }
 
+    /*
+       `owed == 0` and `paid == 0` are amounts. Both are early returns on
+       "there is nothing to do". */
+    // slither-disable-next-line incorrect-equality
     function _payout(address account) private returns (uint256 paid) {
         uint256 owed = claimable[account];
         if (owed == 0) return 0;

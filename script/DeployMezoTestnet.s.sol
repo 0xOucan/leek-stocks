@@ -93,6 +93,24 @@ contract DeployMezoTestnet is Script {
      */
     uint32 constant MIN_ROUND_INTERVAL = 30 seconds;
 
+    /**
+     * @dev The cumulative bound, audit finding R4-6.
+     *
+     *      The per-round bound plus the interval gave 20% every 30 seconds,
+     *      which is four rounds - two minutes - to double the price, and
+     *      `MAX_STALENESS` is an hour so nothing goes stale while it happens.
+     *      A guardian who was not already watching had no brake.
+     *
+     *      20% per hour in total, however many in-bound rounds it takes.
+     *      Doubling now costs 11,010 seconds, a little over three hours, as
+     *      measured by test/Ratchet.t.sol. Chosen equal to
+     *      `MAX_DEVIATION_BPS` so one round may still use the whole window
+     *      budget - a genuine market gap gets through in one step - while a
+     *      sequence of them cannot.
+     */
+    uint32 constant DEVIATION_WINDOW = 1 hours;
+    uint16 constant MAX_WINDOW_DEVIATION_BPS = 2_000;
+
     /* --------------------------------------------------------- vault parameters */
 
     uint16 constant FEE_BPS = 50; // 0.5%, against MAX_FEE_BPS of 500
@@ -408,7 +426,16 @@ contract DeployMezoTestnet is Script {
         returns (IndexOracle oracle)
     {
         oracle = new IndexOracle(
-            feedDescription, FEED_DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, deployer, deployer, deployer
+            feedDescription,
+            FEED_DECIMALS,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MIN_ROUND_INTERVAL,
+            DEVIATION_WINDOW,
+            MAX_WINDOW_DEVIATION_BPS,
+            deployer,
+            deployer,
+            deployer
         );
         oracle.publish(firstAnswer);
 

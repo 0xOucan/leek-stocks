@@ -92,6 +92,22 @@ const ORACLE_ABI = [
     inputs: [],
     outputs: [{ type: "int256" }],
   },
+  {
+    type: "function",
+    name: "deviationWindow",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint32" }],
+  },
+  {
+    type: "function",
+    name: "maxWindowDeviationBps",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint16" }],
+  },
+  { type: "function", name: "anchorAnswer", stateMutability: "view", inputs: [], outputs: [{ type: "int256" }] },
+  { type: "function", name: "anchorAt", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
 ] as const;
 
@@ -327,11 +343,27 @@ export class FeedService {
         state.value = value;
         state.origin = origin;
 
-        const [decimals, maxDeviationBps, minRoundInterval, minAnswer, paused, block, latest] = await Promise.all([
+        const [
+          decimals,
+          maxDeviationBps,
+          minRoundInterval,
+          minAnswer,
+          deviationWindow,
+          maxWindowDeviationBps,
+          anchorAnswer,
+          anchorAt,
+          paused,
+          block,
+          latest,
+        ] = await Promise.all([
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "decimals" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "maxDeviationBps" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "minRoundInterval" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "MIN_ANSWER" }),
+          publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "deviationWindow" }),
+          publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "maxWindowDeviationBps" }),
+          publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "anchorAnswer" }),
+          publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "anchorAt" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "paused" }),
           /* The chain's own clock, not ours.
            *
@@ -373,6 +405,12 @@ export class FeedService {
           maxDeviationBps: Number(maxDeviationBps),
           minRoundInterval: Number(minRoundInterval),
           minAnswer: minAnswer as bigint,
+          anchorAnswer: anchorAnswer as bigint,
+          maxWindowDeviationBps: Number(maxWindowDeviationBps),
+          // Off the chain's clock, like secondsSinceLast above and for the
+          // same reason: the contract compares block.timestamp to anchorAt.
+          secondsSinceAnchor: Math.max(0, Number(block.timestamp) - Number(anchorAt as bigint)),
+          deviationWindow: Number(deviationWindow),
         });
         state.lastDecision = `${decision.publish ? "publish" : "hold"}: ${decision.reason} (${origin})`;
 
