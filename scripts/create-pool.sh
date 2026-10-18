@@ -188,19 +188,12 @@ fi
 
 DEADLINE=$(python3 -c "import time; print(int(time.time()) + 1200)")
 
-# --slow throughout: Mezo reports a sequence rather than a nonce and rejects
-# a second transaction built from a stale one. --async because
-# eth_getTransactionReceipt returns null for minutes after inclusion, so
-# waiting for a receipt reports a failure that did not happen.
-send () {
-  say "> $1"
-  shift
-  cast send --account "$ACCOUNT" --rpc-url "$RPC" --slow --async "$@"
-}
+# shellcheck source=scripts/lib/send.sh
+source "$(dirname "$0")/lib/send.sh"
 
-send "approve $SYMBOL to the router" \
+send_and_confirm "approve $SYMBOL to the router" \
   "$SHARE" "approve(address,uint256)" "$ROUTER" "$SHARE_WEI"
-send "approve MUSD to the router" \
+send_and_confirm "approve MUSD to the router" \
   "$MUSD" "approve(address,uint256)" "$ROUTER" "$MUSD_WEI"
 
 # Minimums at 99% of the quote: the pool is new or nearly so, and a slippage
@@ -209,11 +202,16 @@ send "approve MUSD to the router" \
 MIN_SHARE=$(python3 -c "print($Q_SHARE * 99 // 100)")
 MIN_MUSD=$(python3 -c "print($Q_MUSD * 99 // 100)")
 
-send "addLiquidity (creates the pool)" \
+send_and_confirm "addLiquidity (creates the pool)" \
   "$ROUTER" \
   "addLiquidity(address,address,bool,uint256,uint256,uint256,uint256,address,uint256)" \
   "$SHARE" "$MUSD" false "$SHARE_WEI" "$MUSD_WEI" "$MIN_SHARE" "$MIN_MUSD" "$ME" "$DEADLINE"
 
+# The effect, not the receipt: the factory must now know the pool.
+CREATED=$(cast call "$POOL_FACTORY" "getPool(address,address,bool)(address)" \
+  "$SHARE" "$MUSD" false --rpc-url "$RPC")
+expect_state "the factory lists the pool at the predicted address" "$PREDICTED" "$CREATED"
+
 rule
-say "Sent. Receipts lag on Mezo, so verify rather than trusting the output:"
+say "Listed. Now check it holds and is priced correctly:"
 say "  ./scripts/verify-pool.sh $SYMBOL"

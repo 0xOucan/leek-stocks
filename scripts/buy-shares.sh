@@ -156,16 +156,32 @@ if [[ "$EXECUTE" != "1" ]]; then
 fi
 
 rule
-send () { say "> $1"; shift; cast send --account "$ACCOUNT" --rpc-url "$RPC" --slow --async "$@"; }
+# shellcheck source=scripts/lib/send.sh
+source "$(dirname "$0")/lib/send.sh"
 
 # Exact amount, consumed by the buy. Never type(uint256).max.
-send "approve $(cast from-wei "$MUSD_WEI") MUSD to the vault" \
+send_and_confirm "approve $(cast from-wei "$MUSD_WEI") MUSD to the vault" \
   "$MUSD" "approve(address,uint256)" "$VAULT" "$MUSD_WEI"
-send "buy" \
+ALLOWED=$(cast call "$MUSD" "allowance(address,address)(uint256)" "$ME" "$VAULT" --rpc-url "$RPC" | awk '{print $1}')
+expect_state "allowance is $(cast from-wei "$MUSD_WEI") MUSD" "$MUSD_WEI" "$ALLOWED"
+
+SHARES_BEFORE=$(cast call "$SHARE" "balanceOf(address)(uint256)" "$ME" --rpc-url "$RPC" | awk '{print $1}')
+send_and_confirm "buy" \
   "$VAULT" "buy(uint256,uint256)" "$MUSD_WEI" "$MIN_SHARES"
 
+SHARES_AFTER=$(cast call "$SHARE" "balanceOf(address)(uint256)" "$ME" --rpc-url "$RPC" | awk '{print $1}')
+GAINED=$(python3 -c "print($SHARES_AFTER - $SHARES_BEFORE)")
+say "  gained    $(cast from-wei "$GAINED") $SYMBOL"
+python3 -c "import sys; sys.exit(0 if $GAINED >= $MIN_SHARES else 1)" || {
+  say "  WRONG     fewer shares than the minimum of $(cast from-wei "$MIN_SHARES")"
+  say "            The buy was included but did not do what was quoted."
+  exit 1; }
+# The allowance must be gone: the vault pulls exactly what it was approved,
+# so anything left standing means the buy spent less than it was given.
+LEFT=$(cast call "$MUSD" "allowance(address,address)(uint256)" "$ME" "$VAULT" --rpc-url "$RPC" | awk '{print $1}')
+expect_state "no allowance left standing" "0" "$LEFT"
+
 rule
-say "Sent. Receipts lag on Mezo, so confirm by reading the balance:"
-say "  cast call $SHARE 'balanceOf(address)(uint256)' $ME --rpc-url $RPC"
-say "Then seed the pool:"
+say "Done. You now hold $(cast from-wei "$SHARES_AFTER") $SYMBOL."
+say "Next:"
 say "  ./scripts/create-pool.sh $SYMBOL --shares 1"
