@@ -82,6 +82,7 @@ fix solved the instance and not the class.
 | R4-3 | Medium | `guardian == treasurer` was documented but never enforced | **Fixed** |
 | R4-4 | Medium | One slow publish starved the other oracle for a whole tick | **Fixed** (feed) |
 | R4-5 | Low | The publisher did not know the oracle's cooldown existed | **Fixed** (feed) |
+| R4-9 | Medium | Neither clock alone measures elapsed time; the first fix froze the feed | **Fixed** (feed) |
 | R4-6 | **High** | The oracle's bound is a ratchet: 2 minutes to double the price | **Fixed** (window bound) |
 | R4-7 | Low | Phase two accepts any oracle address, and is not idempotent | **Open** |
 | R4-8 | Low | `ETFFactory.admin` is immutable while the admin role is transferable | **Open** |
@@ -812,6 +813,42 @@ The constructor also rejects `deviationWindow <= minRoundInterval`, the
 configuration in which the window expires between rounds and bounds nothing —
 which would make this look implemented while doing nothing, and that is worse
 than not having it.
+
+## R4-9 Neither clock alone measures elapsed time correctly
+
+**Severity**: Medium (liveness, and a fix that broke differently)
+**Category**: oracles / liveness
+**Location**: `feed/src/service.ts`, `elapsedSince`
+
+**Description**: Two failures within an hour of each other, the second being
+my own fix for the first.
+
+`Date.now()` minus an on-chain timestamp compares two unrelated clocks. The
+contract compares `block.timestamp` to `block.timestamp`, so all the skew
+between the publisher's host and the chain lands in our number — and it can go
+**negative**, which makes `secondsSinceLast < minRoundInterval` true forever.
+The feed then stops publishing entirely while reporting a healthy hold, which
+is the worst available failure: no error, no alert, and every consumer goes
+stale an hour later.
+
+Reading the latest block's timestamp instead is worse on an idle chain. Anvil
+mines only when a transaction arrives, so with nothing happening the chain
+clock is frozen: the local stack sat at `1s since the last round`
+indefinitely and never produced a second round. Visible in the browser as a
+stale oracle, an unreadable price and "Backing unknown".
+
+**Recommendation**: **fixed** — the larger of the two. The quantity actually
+wanted is the timestamp of the block that will *include* the publish, which is
+in the future relative to the latest block, and the maximum predicts it better
+in both cases. The asymmetry agrees: too small means the feed holds and stops,
+too large means at worst one publish reverts with `TooSoon` and the next tick
+corrects. `scripts/local-up.sh` also runs anvil with `--block-time 2`, because
+a rehearsal that cannot publish proves nothing.
+
+Worth recording as a finding rather than a commit note, because it is the
+second time in this audit that a local run surfaced something no unit test
+could: the first was R3-1's geometric ladder, which the handler could not
+reach.
 
 ## R4-7 Phase two accepts any oracle address, and is not idempotent (open)
 
