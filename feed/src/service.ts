@@ -78,6 +78,20 @@ const ORACLE_ABI = [
     inputs: [],
     outputs: [{ type: "uint16" }],
   },
+  {
+    type: "function",
+    name: "minRoundInterval",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint32" }],
+  },
+  {
+    type: "function",
+    name: "MIN_ANSWER",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "int256" }],
+  },
   { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
 ] as const;
 
@@ -147,6 +161,8 @@ export interface Config {
   readonly intervalSeconds: number;
   readonly heartbeatSeconds: number;
   readonly thresholdBps: number;
+  /** How long to wait for a receipt before moving on. See tick(). */
+  readonly receiptTimeoutMs: number;
   readonly httpPort: number;
   /** Which chain to publish to. Defaults to Mezo testnet. */
   readonly chainId: number;
@@ -218,6 +234,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     intervalSeconds: Number(env.INTERVAL_SECONDS ?? 60),
     heartbeatSeconds: Number(env.HEARTBEAT_SECONDS ?? 1800),
     thresholdBps: Number(env.THRESHOLD_BPS ?? 50),
+    receiptTimeoutMs: Number(env.RECEIPT_TIMEOUT_MS ?? 20_000),
     httpPort: Number(env.HTTP_PORT ?? 8787),
     chainId: Number(env.CHAIN_ID ?? mezoTestnet.id),
     synthetic: env.SYNTHETIC === "1",
@@ -226,6 +243,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
 
 export class FeedService {
   private readonly status = new Map<string, IndexStatus>();
+  private ticking = false;
   private step = 0;
   private timer: NodeJS.Timeout | null = null;
   private server: ReturnType<typeof createServer> | null = null;
@@ -264,6 +282,29 @@ export class FeedService {
    *  and leaves the others alone, because one dead constituent should not stop
    *  a feed that is otherwise healthy. */
   async tick(): Promise<void> {
+    /* One tick at a time.
+     *
+     * `setInterval` fires on a wall clock and does not wait for the previous
+     * callback's promise, so a tick slower than INTERVAL_SECONDS used to
+     * overlap the next one. Two overlapping ticks publish from the same key
+     * concurrently, which on Mezo means one of them is rejected for being out
+     * of sequence - a self-inflicted feed error that looks like an RPC fault.
+     * Skipping is right rather than queueing: the skipped tick's work is to
+     * read a price and publish it, and the tick in flight is already doing
+     * exactly that with fresher data. */
+    if (this.ticking) {
+      console.warn("feed: previous tick still running, skipping this one");
+      return;
+    }
+    this.ticking = true;
+    try {
+      await this.tickOnce();
+    } finally {
+      this.ticking = false;
+    }
+  }
+
+  private async tickOnce(): Promise<void> {
     this.step += 1;
     /* One request per tick for every constituent of every index, rather than
      * one per index: the source is rate-limited, the indices overlap, and a
@@ -286,9 +327,11 @@ export class FeedService {
         state.value = value;
         state.origin = origin;
 
-        const [decimals, maxDeviationBps, paused, latest] = await Promise.all([
+        const [decimals, maxDeviationBps, minRoundInterval, minAnswer, paused, latest] = await Promise.all([
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "decimals" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "maxDeviationBps" }),
+          publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "minRoundInterval" }),
+          publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "MIN_ANSWER" }),
           publicClient.readContract({ address: oracle, abi: ORACLE_ABI, functionName: "paused" }),
           publicClient
             .readContract({ address: oracle, abi: ORACLE_ABI, functionName: "latestRoundData" })
@@ -314,6 +357,8 @@ export class FeedService {
           thresholdBps: this.config.thresholdBps,
           heartbeatSeconds: this.config.heartbeatSeconds,
           maxDeviationBps: Number(maxDeviationBps),
+          minRoundInterval: Number(minRoundInterval),
+          minAnswer: minAnswer as bigint,
         });
         state.lastDecision = `${decision.publish ? "publish" : "hold"}: ${decision.reason} (${origin})`;
 
@@ -342,7 +387,29 @@ export class FeedService {
             args: [decision.answer],
             gas,
           });
-          await publicClient.waitForTransactionReceipt({ hash });
+          /* Bounded, and a timeout is not an error.
+           *
+           * Mezo's eth_getTransactionReceipt returns null for minutes after a
+           * transaction is already mined, and this await was unbounded. Both
+           * indices publish from one key in this one sequential loop, so a
+           * single slow receipt starved the *other* oracle for the whole tick
+           * - long enough, repeatedly, to take a vault stale and stop it
+           * trading, caused entirely by the other index. Sequential is
+           * deliberate (one key, one nonce sequence, and Mezo rejects
+           * out-of-sequence sends), so the fix is to stop waiting rather than
+           * to parallelise.
+           *
+           * The transaction is submitted either way; the re-read below, and
+           * failing that the next tick, reports what actually landed. */
+          try {
+            await publicClient.waitForTransactionReceipt({
+              hash,
+              timeout: this.config.receiptTimeoutMs,
+              confirmations: 1,
+            });
+          } catch {
+            state.lastDecision = `${state.lastDecision}; submitted ${hash}, receipt not seen yet`;
+          }
 
           /* Re-read, rather than only writing the answer back.
              Setting onChainAnswer alone left onChainRound and

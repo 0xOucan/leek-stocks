@@ -22,6 +22,7 @@ test("the service module loads and constructs under type stripping", () => {
     intervalSeconds: 60,
     heartbeatSeconds: 1800,
     thresholdBps: 50,
+  receiptTimeoutMs: 20_000,
     httpPort: 0,
     synthetic: true,
   });

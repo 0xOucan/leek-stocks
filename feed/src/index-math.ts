@@ -129,17 +129,47 @@ export function decidePublish(args: {
   readonly thresholdBps: number;
   readonly heartbeatSeconds: number;
   readonly maxDeviationBps: number;
+  /** The oracle's immutable per-round cooldown, in seconds. */
+  readonly minRoundInterval: number;
+  /** The oracle's floor, in feed units. Answers below it revert. */
+  readonly minAnswer: bigint;
 }): PublishDecision {
   const { target, last, secondsSinceLast, thresholdBps, heartbeatSeconds, maxDeviationBps } = args;
+  const { minRoundInterval, minAnswer } = args;
   if (target <= 0n) throw new Error("target must be positive");
   if (last === null || last === 0n) {
-    return { publish: true, reason: "first round", answer: target };
+    /* Clamped up to the floor even on the first round. A first answer below
+     * MIN_ANSWER reverts on chain, and before the floor existed it was worse
+     * than a revert: it pinned the feed at dust permanently. */
+    return {
+      publish: true,
+      reason: target < minAnswer ? `first round, raised to the oracle's floor` : "first round",
+      answer: target < minAnswer ? minAnswer : target,
+    };
+  }
+
+  /* The oracle's own cooldown. The service did not know this existed, so
+   * after every restart it burned a tick on a TooSoon revert that read in
+   * /prices as a feed error. Holding here is not a failure and says so. */
+  if (secondsSinceLast < minRoundInterval) {
+    return {
+      publish: false,
+      reason: `${secondsSinceLast}s since the last round, the oracle requires ${minRoundInterval}s`,
+      answer: target,
+    };
   }
 
   const difference = target > last ? target - last : last - target;
   const movedBps = (difference * 10_000n) / last;
-  const bound = (last * BigInt(maxDeviationBps)) / 10_000n;
-  const clamped = difference > bound ? (target > last ? last + bound : last - bound) : target;
+  /* At least one unit, matching the contract's one-unit allowance. The
+   * division truncates to zero for a small `last`, and a bound of zero makes
+   * every step a clamp to the current value - the off-chain half of the
+   * absorbing-floor bug that MIN_ANSWER closes on chain. */
+  const divided = (last * BigInt(maxDeviationBps)) / 10_000n;
+  const bound = divided > 0n ? divided : 1n;
+  const stepped = difference > bound ? (target > last ? last + bound : last - bound) : target;
+  // Never below the floor, whatever the step arithmetic says.
+  const clamped = stepped < minAnswer ? minAnswer : stepped;
   const wasClamped = clamped !== target;
 
   if (movedBps >= BigInt(thresholdBps)) {

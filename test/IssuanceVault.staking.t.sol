@@ -359,6 +359,71 @@ contract IssuanceVaultStakingTest is Test {
         assertEq(vault.feesAccrued(), 2.5e18);
     }
 
+    function test_theAdminCannotUndoTheGuardiansRescueImmediately() public {
+        /*
+         * Inverted from what the code used to allow. `emergencyUnsetStaking`
+         * was handed to the guardian as the remedy for a staking contract
+         * that freezes trading - but `setStaking` had no timelock and no
+         * cooldown, so the admin whose mistake caused the incident could
+         * re-point the vault at the same contract in the very next block, as
+         * often as the guardian unset it. The guardian's power was decorative.
+         */
+        vm.startPrank(guardian);
+        vault.pause();
+        vault.emergencyUnsetStaking();
+        vault.unpause();
+        vm.stopPrank();
+
+        uint256 delay = vault.STAKING_RELOCK_DELAY();
+        assertEq(vault.stakingLockedUntil(), block.timestamp + delay);
+
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IssuanceVault.StakingLocked.selector, delay));
+        vault.setStaking(ILeekStaking(address(staking)));
+
+        // One second short of the window is still shut.
+        vm.warp(block.timestamp + delay - 1);
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IssuanceVault.StakingLocked.selector, 1));
+        vault.setStaking(ILeekStaking(address(staking)));
+
+        // And open after it.
+        vm.warp(block.timestamp + 1);
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(staking)));
+        assertEq(address(vault.staking()), address(staking));
+    }
+
+    function test_unsettingToZeroIsNeverLocked() public {
+        /*
+         * The lock must not be able to pin a hostile contract in place. Only
+         * the direction that re-arms staking waits; the direction that
+         * restores pre-staking behaviour is always available.
+         */
+        vm.startPrank(guardian);
+        vault.pause();
+        vault.emergencyUnsetStaking();
+        vault.unpause();
+        vm.stopPrank();
+
+        vm.prank(admin);
+        vault.setStaking(ILeekStaking(address(0)));
+        assertEq(address(vault.staking()), address(0));
+    }
+
+    function test_theRegistryRefusesOneKeyAsGuardianAndTreasurer() public {
+        /*
+         * The invariant `emergencyUnsetStaking` is delegated on. One address
+         * holding both roles can detach staking - stopping every staker's
+         * rewards while trading looks normal - and then withdraw the fees
+         * that accrue instead, leaving only a StakingSet(0) event behind.
+         */
+        ETFFactory f = new ETFFactory(IERC20(address(musd)), admin);
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(ETFFactory.SameHolder.selector, guardian));
+        f.registerIndex("X", oracle, 1 hours, FEE_BPS, RESERVE_SHARE_BPS, 1_000_000e18, guardian, guardian);
+    }
+
     function test_onlyTheGuardianCanUnwire() public {
         vm.prank(alice);
         vm.expectRevert();

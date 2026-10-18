@@ -88,6 +88,10 @@ const BASE = {
   thresholdBps: 50,
   heartbeatSeconds: 1800,
   maxDeviationBps: 2000,
+  // Neutral in the cases below, which are about the threshold, the heartbeat
+  // and the bound. The cooldown and the floor have their own tests.
+  minRoundInterval: 0,
+  minAnswer: 1n,
 };
 
 test("the first round always publishes", () => {
@@ -154,4 +158,49 @@ test("the synthetic series is deterministic and stays inside the bound", () => {
   // Two indices do not produce the same series, or a demo would show one line
   // drawn twice.
   assert.notEqual(syntheticValue(INDICES[0]!, 3), syntheticValue(INDICES[1]!, 3));
+});
+
+test("the oracle's own cooldown holds the publish, and is not an error", () => {
+  /* The service used to be unaware minRoundInterval existed, so after every
+   * restart it sent a publish that reverted with TooSoon and surfaced in
+   * /prices as a feed error. */
+  const decision = decidePublish({
+    ...BASE,
+    minRoundInterval: 30,
+    target: 20_000n, // far past the threshold and the bound
+    last: 10_000n,
+    secondsSinceLast: 12,
+  });
+  assert.equal(decision.publish, false);
+  assert.match(decision.reason, /the oracle requires 30s/);
+
+  const later = decidePublish({ ...BASE, minRoundInterval: 30, target: 20_000n, last: 10_000n, secondsSinceLast: 30 });
+  assert.equal(later.publish, true);
+});
+
+test("nothing below the oracle's floor is ever published", () => {
+  const first = decidePublish({ ...BASE, minAnswer: 1_000_000n, target: 5n, last: null, secondsSinceLast: 0 });
+  assert.equal(first.publish, true);
+  assert.equal(first.answer, 1_000_000n, "a first round below the floor must be raised, not sent");
+  assert.match(first.reason, /floor/);
+
+  // A crash walked down by the bound stops at the floor rather than below it.
+  const walked = decidePublish({
+    ...BASE,
+    minAnswer: 1_000_000n,
+    target: 1n,
+    last: 1_050_000n,
+    secondsSinceLast: 10,
+  });
+  assert.equal(walked.answer, 1_000_000n);
+});
+
+test("the per-round bound is never zero, so a small answer is not absorbing", () => {
+  /* The on-chain mirror of this is MIN_ANSWER. Off chain the bound is a
+   * division that truncates: at last = 4 and 2000 bps it was 0, so every
+   * target clamped to the current value and the feed republished the same
+   * dust forever on the heartbeat - never stale, so never caught. */
+  const decision = decidePublish({ ...BASE, target: 1_000n, last: 4n, secondsSinceLast: 10 });
+  assert.equal(decision.publish, true);
+  assert.equal(decision.answer, 5n, "the bound must permit at least a one-unit step");
 });

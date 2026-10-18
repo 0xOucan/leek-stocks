@@ -81,6 +81,25 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      walks at most 8 tiers (~40k measured) and `notifyReward` writes
      *      five slots (~30k measured).
      */
+    /**
+     * @notice How long after an emergency unset `setStaking` stays shut.
+     *
+     * @dev The guardian's rescue was undoable in the next block. Nothing in
+     *      `setStaking` looked at whether it was re-pointing the vault at the
+     *      contract a guardian had just detached, so the admin simply called
+     *      it again - and again, as often as the guardian unset it. The
+     *      guardian's power was therefore not a power at all, which is the
+     *      opposite of what the previous round's fix claimed to deliver.
+     *
+     *      A fixed delay rather than a governance timelock, because the
+     *      asymmetry is the whole point: detaching is instant and
+     *      re-attaching waits. 24 hours is long enough to read a log and
+     *      short enough that an honest redeploy is not blocked for a week.
+     *      Unsetting to zero stays available throughout, so the lock can
+     *      never trap the vault in a bad configuration.
+     */
+    uint256 public constant STAKING_RELOCK_DELAY = 24 hours;
+
     uint256 private constant STAKING_READ_GAS = 120_000;
     uint256 private constant STAKING_WRITE_GAS = 300_000;
     uint256 private constant BPS = 10_000;
@@ -141,6 +160,9 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      */
     ILeekStaking public staking;
 
+    /// @notice Timestamp before which `setStaking` cannot point anywhere but zero.
+    uint256 public stakingLockedUntil;
+
     event Bought(address indexed buyer, uint256 musdIn, uint256 fee, uint256 sharesOut, uint256 price);
     event Redeemed(address indexed holder, uint256 sharesIn, uint256 fee, uint256 musdOut, uint256 price);
     event Funded(address indexed from, uint256 amount);
@@ -152,6 +174,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     event RevenueStranded(uint256 amount);
     /// @notice The guardian detached the staking contract during an incident.
     event StakingEmergencyUnset();
+    event StakingRelockUntil(uint256 timestamp);
     event ReserveShareSet(uint16 reserveShareBps);
     event ReservesTopped(uint256 amount, uint256 reservesAfter);
     event MaxSharesSet(uint256 maxShares);
@@ -165,6 +188,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     error NotAContract(address target);
     error ShortTransfer(uint256 expected, uint256 received);
     error NotPaused();
+    error StakingLocked(uint256 secondsRemaining);
     error CapAboveShareSupply(uint256 requested, uint256 shareMaxSupply);
     error ShareTooHigh(uint16 reserveShareBps);
     error ShareAlreadySet();
@@ -343,6 +367,16 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
          * clamp, and `emergencyUnsetStaking` for the guardian.
          */
         if (address(next) != address(0) && address(next).code.length == 0) revert NotAContract(address(next));
+        /*
+         * The guardian's detach holds for STAKING_RELOCK_DELAY. Setting to
+         * zero stays allowed inside the window - that direction only ever
+         * returns the vault to pre-staking behaviour, and forbidding it would
+         * mean a lock could pin a hostile contract in place if one were ever
+         * attached between the unset and the window closing.
+         */
+        if (address(next) != address(0) && block.timestamp < stakingLockedUntil) {
+            revert StakingLocked(stakingLockedUntil - block.timestamp);
+        }
         staking = next;
         emit StakingSet(address(next));
     }
@@ -383,6 +417,8 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
          */
         if (!paused) revert NotPaused();
         staking = ILeekStaking(address(0));
+        stakingLockedUntil = block.timestamp + STAKING_RELOCK_DELAY;
+        emit StakingRelockUntil(stakingLockedUntil);
         emit StakingEmergencyUnset();
         emit StakingSet(address(0));
     }

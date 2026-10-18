@@ -73,6 +73,7 @@ contract ETFFactory is AccessControl {
     error NotRegistered(string symbol);
     error AlreadyDeployed(string symbol);
     error AlreadyRegistered(string symbol);
+    error SameHolder(address holder);
 
     constructor(IERC20 musd_, address admin_) {
         if (address(musd_) == address(0) || admin_ == address(0)) revert ZeroAddress();
@@ -106,6 +107,20 @@ contract ETFFactory is AccessControl {
         // registry is the right place to name three distinct holders because
         // it keeps deployETF's calldata at two strings.
         if (guardian == address(0) || treasurer == address(0)) revert ZeroAddress();
+        /*
+         * And genuinely separate.
+         *
+         * The comment above has said "separate keys" since the first version
+         * while nothing enforced it, and both default to the admin in the
+         * deploy scripts. One address holding both can detach the staking
+         * contract - stopping every staker's rewards while trading continues
+         * normally - and then withdraw the fees that accumulate instead.
+         * `emergencyUnsetStaking` was handed to the guardian on the explicit
+         * argument that it "cannot take value: the treasury share simply
+         * accrues to feesAccrued, where only TREASURER_ROLE can reach it".
+         * That argument is only true if this holds.
+         */
+        if (guardian == treasurer) revert SameHolder(guardian);
         bytes32 key = keccak256(bytes(symbol));
         if (_configs[key].registered) revert AlreadyRegistered(symbol);
 

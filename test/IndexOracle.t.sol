@@ -194,22 +194,76 @@ contract IndexOracleTest is Test {
         oracle.publish(11e8);
     }
 
-    function test_firstPublishIsExemptFromTheBound() public {
-        // Nothing to deviate from, so any positive answer is accepted. This is
-        // the one value the publisher sets freely, by design.
-        _publish(1);
+    function test_firstPublishIsExemptFromTheBoundButNotFromTheFloor() public {
+        /*
+         * Inverted. This test used to publish 1 wei of price and assert it
+         * stored, documenting that "the one value the publisher sets freely"
+         * was unbounded below. That freedom was the bug: a multiplicative
+         * deviation bound makes small answers absorbing, so answer 1 was a
+         * one-way door that pinned the feed at dust forever and left the
+         * vault trading at ~0. MIN_ANSWER closes it, and the exemption that
+         * remains is only from the *deviation* bound.
+         */
+        vm.prank(publisher);
+        vm.expectRevert(abi.encodeWithSelector(IndexOracle.AnswerTooSmall.selector, int256(1)));
+        oracle.publish(1);
+
+        // Still exempt from the deviation bound: the floor itself publishes,
+        // which no later bound would have allowed from a base of 100.
+        int256 floor_ = oracle.MIN_ANSWER();
+        _publish(floor_);
         (, int256 answer,,,) = oracle.latestRoundData();
-        assertEq(answer, 1);
+        assertEq(answer, floor_, "the floor is publishable as a first answer");
+    }
+
+    function test_theFloorIsNotAbsorbing() public {
+        /*
+         * The property MIN_ANSWER exists for: from the lowest publishable
+         * answer, the deviation bound still permits a real move. At
+         * previous == 1 it permitted only a difference of 0.
+         */
+        int256 floor_ = oracle.MIN_ANSWER();
+        _publish(floor_);
+
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
+        vm.prank(publisher);
+        oracle.publish(floor_ + (floor_ * int256(uint256(MAX_DEVIATION_BPS))) / 10_000);
+
+        (, int256 answer,,,) = oracle.latestRoundData();
+        assertGt(answer, floor_, "the feed cannot climb away from the floor");
+    }
+
+    function test_aOneUnitStepIsAlwaysPermitted() public {
+        // Belt and braces beside MIN_ANSWER: the bound can never be
+        // arithmetically unsatisfiable, whatever `previous` is.
+        _publish(FIRST);
+        vm.warp(block.timestamp + MIN_ROUND_INTERVAL);
+        vm.prank(publisher);
+        oracle.publish(FIRST + 1);
+        (, int256 answer,,,) = oracle.latestRoundData();
+        assertEq(answer, FIRST + 1);
+    }
+
+    function test_answerAboveTheCeilingIsRejected() public {
+        // Read first. `vm.prank` is consumed by the next call, and a getter in
+        // an argument expression is a call. Four times in this repository now.
+        int256 tooBig = oracle.MAX_ANSWER() + 1;
+        vm.prank(publisher);
+        vm.expectRevert(abi.encodeWithSelector(IndexOracle.AnswerTooLarge.selector, tooBig));
+        oracle.publish(tooBig);
     }
 
     /// Fuzzed: a move within the bound is always accepted, one outside never is.
     function testFuzz_deviationBound(int256 start, int256 next) public {
         start = bound(start, 1e8, 1e18);
-        next = bound(next, 1, type(int64).max);
+        // From MIN_ANSWER up, since below the floor `publish` rejects for a
+        // different and prior reason - which is what this fuzz run found.
+        next = bound(next, oracle.MIN_ANSWER(), type(int64).max);
         _publish(start);
 
         int256 difference = next > start ? next - start : start - next;
-        bool withinBound = difference * 10_000 <= start * int256(uint256(MAX_DEVIATION_BPS));
+        // `|| difference <= 1`: a one-unit step is permitted unconditionally.
+        bool withinBound = difference <= 1 || difference * 10_000 <= start * int256(uint256(MAX_DEVIATION_BPS));
 
         // Isolate the deviation bound from the round interval.
         vm.warp(block.timestamp + MIN_ROUND_INTERVAL);

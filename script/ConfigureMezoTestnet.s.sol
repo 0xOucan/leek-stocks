@@ -86,6 +86,24 @@ contract ConfigureMezoTestnet is Script {
         guardian = vm.envOr("GUARDIAN", admin);
         treasurer = vm.envOr("TREASURER", admin);
 
+        /*
+         * Not defaulted to the same address.
+         *
+         * Both used to default to the ADMIN, and the factory's comment has
+         * claimed "separate keys" since the first version while nothing
+         * enforced it. `registerIndex` now rejects guardian == treasurer
+         * outright, because `emergencyUnsetStaking` was delegated to the
+         * guardian on the explicit argument that unsetting "cannot take
+         * value: the treasury share simply accrues to feesAccrued, where only
+         * TREASURER_ROLE can reach it" - an argument that is only true when
+         * the two differ. Caught here with a usable message rather than as a
+         * bare custom-error revert mid-broadcast.
+         */
+        require(
+            guardian != treasurer,
+            "GUARDIAN and TREASURER must differ: one key that can detach staking and also take the fees defeats the split. Set both explicitly."
+        );
+
         uint256 allowed = vm.envOr("ALLOW_CHAIN_ID", uint256(0));
         if (allowed != 0 && allowed == block.chainid) {
             console2.log("!! REHEARSAL on chain", block.chainid);

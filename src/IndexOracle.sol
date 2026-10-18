@@ -92,6 +92,31 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
      */
     int256 public constant MAX_ANSWER = 1e30;
 
+    /**
+     * @notice The smallest publishable answer, in feed decimals.
+     *
+     * @dev The mirror image of `MAX_ANSWER`, and it took a re-audit to see
+     *      that the bound had only one side.
+     *
+     *      The deviation bound is multiplicative, so small answers are
+     *      *absorbing*: at `previous == 1` and 2000 bps the right-hand side
+     *      of the check is 2000, an integer `difference * 10_000` cannot be
+     *      less than without being zero, so the only answer ever publishable
+     *      again is 1. There is no way to reset a round or lower
+     *      `_latestRound`, so one mistyped first answer pins the feed at
+     *      dust for good - and because the off-chain publisher's own bound
+     *      truncates to zero there too, it keeps republishing the pinned
+     *      value on the heartbeat, the feed never goes stale, `price()` never
+     *      reverts, and the vault trades at ~0 indefinitely. That is the
+     *      worse half of the brick `MAX_ANSWER` was added to prevent.
+     *
+     *      1e6 at 8 decimals is 0.01 index points. At that floor the bound
+     *      still permits a move of 20,000 units, so no reachable answer is
+     *      absorbing, and an index based at 100 has four orders of magnitude
+     *      of headroom below it.
+     */
+    int256 public constant MIN_ANSWER = 1e6;
+
     /* ----------------------------------------------------------------- state */
 
     struct Round {
@@ -116,6 +141,7 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
 
     error NotPositive(int256 answer);
     error AnswerTooLarge(int256 answer);
+    error AnswerTooSmall(int256 answer);
     error TooSoon(uint256 elapsed, uint32 required);
     error DeviationTooLarge(int256 previous, int256 proposed, uint16 maxBps);
     error FeedPaused();
@@ -179,8 +205,10 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
     function publish(int256 answer) external onlyRole(PUBLISHER_ROLE) returns (uint80 roundId) {
         if (paused) revert FeedPaused();
         if (answer <= 0) revert NotPositive(answer);
-        // Bounded on every round including the first: see MAX_ANSWER.
+        // Bounded both ways on every round including the first: see
+        // MAX_ANSWER and MIN_ANSWER.
         if (answer > MAX_ANSWER) revert AnswerTooLarge(answer);
+        if (answer < MIN_ANSWER) revert AnswerTooSmall(answer);
 
         uint80 previousRound = _latestRound;
         if (previousRound != 0) {
@@ -193,7 +221,13 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
             // Basis points, multiplied before divided: no floats, no truncation
             // of the bound itself. |answer - previous| * 10000 <= previous * bps
             int256 difference = answer > previous ? answer - previous : previous - answer;
-            if (difference * 10_000 > previous * int256(uint256(maxDeviationBps))) {
+            // A one-unit step is always permitted. With MIN_ANSWER in place no
+            // reachable answer is absorbing, so this is belt and braces rather
+            // than the fix - but it costs nothing and it means the bound can
+            // never again be arithmetically unsatisfiable for any `previous`.
+            // One unit is 1e-8 index points, and `minRoundInterval` bounds how
+            // often it can be taken.
+            if (difference > 1 && difference * 10_000 > previous * int256(uint256(maxDeviationBps))) {
                 revert DeviationTooLarge(previous, answer, maxDeviationBps);
             }
         }

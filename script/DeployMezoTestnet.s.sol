@@ -182,9 +182,41 @@ contract DeployMezoTestnet is Script {
         address deployer = msg.sender;
         address settlementToken = vm.envOr("SETTLEMENT_TOKEN", DEFAULT_SETTLEMENT_TOKEN);
         admin = vm.envOr("ADMIN", deployer);
-        publisher = vm.envOr("PUBLISHER", deployer);
-        guardian = vm.envOr("GUARDIAN", deployer);
-        treasurer = vm.envOr("TREASURER", deployer);
+        /*
+         * The other three default to the ADMIN, not to the deployer, whenever
+         * ADMIN is someone else.
+         *
+         * They used to default to the deployer unconditionally, and because
+         * every grant/renounce pair below is conditional on the holder
+         * differing from the deployer, a two-phase deployment with only ADMIN
+         * set left the deployer holding PUBLISHER_ROLE and GUARDIAN_ROLE on
+         * both oracles. The whole point of the split is to disarm that key.
+         *
+         * An operator who genuinely wants the deployer to keep publishing
+         * says so by passing PUBLISHER=<deployer> explicitly.
+         */
+        address fallbackHolder = admin == deployer ? deployer : admin;
+        publisher = vm.envOr("PUBLISHER", fallbackHolder);
+        guardian = vm.envOr("GUARDIAN", fallbackHolder);
+        treasurer = vm.envOr("TREASURER", fallbackHolder);
+
+        /*
+         * Not defaulted to the same address.
+         *
+         * Both used to default to the ADMIN, and the factory's comment has
+         * claimed "separate keys" since the first version while nothing
+         * enforced it. `registerIndex` now rejects guardian == treasurer
+         * outright, because `emergencyUnsetStaking` was delegated to the
+         * guardian on the explicit argument that unsetting "cannot take
+         * value: the treasury share simply accrues to feesAccrued, where only
+         * TREASURER_ROLE can reach it" - an argument that is only true when
+         * the two differ. Caught here with a usable message rather than as a
+         * bare custom-error revert mid-broadcast.
+         */
+        require(
+            guardian != treasurer,
+            "GUARDIAN and TREASURER must differ: one key that can detach staking and also take the fees defeats the split. Set both explicitly."
+        );
 
         /*
          * The chain guard, with a named escape for a rehearsal.
@@ -270,27 +302,25 @@ contract DeployMezoTestnet is Script {
                two-phase split is that the deployer walks away with nothing,
                and a script that prints that claim without checking it is how
                the previous version came to have dead hand-over code. */
-            require(
-                !gologgleOracle.hasRole(gologgleOracle.DEFAULT_ADMIN_ROLE(), deployer)
-                    && !amezonOracle.hasRole(amezonOracle.DEFAULT_ADMIN_ROLE(), deployer),
-                "deployer still administers an oracle"
-            );
-            require(
-                gologgleOracle.hasRole(gologgleOracle.DEFAULT_ADMIN_ROLE(), admin)
-                    && amezonOracle.hasRole(amezonOracle.DEFAULT_ADMIN_ROLE(), admin),
-                "admin does not administer the oracles"
-            );
+            /*
+             * Unconditional, every role, both oracles.
+             *
+             * The previous version wrapped the publisher check in
+             * `if (publisher != deployer)` - which is exactly never true in
+             * the case where the deployer kept the role - and did not check
+             * GUARDIAN_ROLE at all, while printing "the deployer holds no
+             * roles on the oracles" underneath. An assertion that cannot fire
+             * in the failing case is worse than no assertion, because it
+             * reads as coverage.
+             */
+            _assertDeployerDisarmed(gologgleOracle, deployer);
+            _assertDeployerDisarmed(amezonOracle, deployer);
+
             require(factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), admin), "admin does not administer the factory");
             require(
                 !factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), deployer),
                 "deployer still administers the factory"
             );
-            if (publisher != deployer) {
-                require(
-                    !gologgleOracle.hasRole(gologgleOracle.PUBLISHER_ROLE(), deployer),
-                    "deployer can still publish"
-                );
-            }
 
             console2.log("");
             console2.log("=== PHASE 1 COMPLETE. The admin must now run phase 2. ===");
@@ -299,7 +329,8 @@ contract DeployMezoTestnet is Script {
             console2.log("AMEZON oracle    ", address(amezonOracle));
             console2.log("settlement token ", settlementToken);
             console2.log("");
-            console2.log("The deployer holds no roles on the oracles. Run, as ADMIN:");
+            console2.log("The deployer holds no role on either oracle or on the factory, asserted above.");
+            console2.log("Run, as ADMIN:");
             console2.log("  FACTORY=<factory> GOLOGGLE_ORACLE=<...> AMEZON_ORACLE=<...> \\");
             console2.log("  forge script script/ConfigureMezoTestnet.s.sol --rpc-url mezo_testnet \\");
             console2.log("    --account <admin> --sender <admin> --broadcast --slow");
@@ -373,9 +404,26 @@ contract DeployMezoTestnet is Script {
         if (guardian != deployer) oracle.grantRole(oracle.GUARDIAN_ROLE(), guardian);
         if (admin != deployer) oracle.grantRole(oracle.DEFAULT_ADMIN_ROLE(), admin);
 
+        /* Renounce each role the deployer is not the configured holder of.
+           These are the same conditions as the grants above, which is the
+           point: a role granted elsewhere must not also stay here. */
         if (publisher != deployer) oracle.renounceRole(oracle.PUBLISHER_ROLE(), deployer);
         if (guardian != deployer) oracle.renounceRole(oracle.GUARDIAN_ROLE(), deployer);
         if (admin != deployer) oracle.renounceRole(oracle.DEFAULT_ADMIN_ROLE(), deployer);
+    }
+
+    /**
+     * @dev Assert the deployer walks away from an oracle with nothing.
+     *
+     *      One helper for both oracles and all three roles, so a role cannot
+     *      be left out of one of two near-identical blocks - which is how
+     *      GUARDIAN_ROLE went unchecked.
+     */
+    function _assertDeployerDisarmed(IndexOracle oracle, address deployer) internal view {
+        require(!oracle.hasRole(oracle.DEFAULT_ADMIN_ROLE(), deployer), "deployer still administers an oracle");
+        require(!oracle.hasRole(oracle.PUBLISHER_ROLE(), deployer), "deployer can still publish");
+        require(!oracle.hasRole(oracle.GUARDIAN_ROLE(), deployer), "deployer can still pause the feed");
+        require(oracle.hasRole(oracle.DEFAULT_ADMIN_ROLE(), admin), "admin does not administer the oracle");
     }
 
     /**
