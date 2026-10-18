@@ -172,8 +172,6 @@ contract AdminTheftTest is Test {
         assertLt(vault.reserves(), reservesBefore / 50);
     }
 
-
-
     /**
      * The 20% deviation bound is per round, and nothing requires time between
      * rounds. So it compounds per transaction rather than per hour, and the

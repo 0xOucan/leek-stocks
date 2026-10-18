@@ -130,8 +130,7 @@ contract ConfigureMezoTestnet is Script {
         (address gologgleShare, address gologgleVault) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         (address amezonShare, address amezonVault) = factory.deployETF("Amezon Index", "AMEZON");
 
-        LeekStaking staking =
-            new LeekStaking(IERC20(mezoToken), IERC20(settlementToken), admin, STAKING_COOLDOWN);
+        LeekStaking staking = new LeekStaking(IERC20(mezoToken), IERC20(settlementToken), admin, STAKING_COOLDOWN);
 
         LeekStaking.Tier[] memory tiers = new LeekStaking.Tier[](3);
         tiers[0] = LeekStaking.Tier(TIER_1_STAKE, TIER_1_DISCOUNT_BPS);

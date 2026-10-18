@@ -166,11 +166,7 @@ contract IssuanceVaultInvariantsTest is Test {
     /// Every MUSD in the vault arrived through buy() or fund(), and everything
     /// that left went through redeem() or withdrawFees(). No other path exists.
     function invariant_musdIsConserved() public view {
-        assertEq(
-            musd.balanceOf(address(vault)) + handler.musdOut(),
-            handler.musdIn(),
-            "MUSD appeared or vanished"
-        );
+        assertEq(musd.balanceOf(address(vault)) + handler.musdOut(), handler.musdIn(), "MUSD appeared or vanished");
     }
 
     /// Shares exist only against a buy, so supply is zero exactly when nobody

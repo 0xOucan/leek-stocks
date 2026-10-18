@@ -44,6 +44,7 @@ contract IssuanceVaultStakingTest is Test {
 
     /// The oracle-independent holding period the staking contract enforces.
     uint256 constant COOLDOWN = 1 hours;
+
     function setUp() public {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(18);

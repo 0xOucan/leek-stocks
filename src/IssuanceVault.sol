@@ -465,9 +465,8 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
          * Anything other than exactly 32 bytes of successful return data is
          * treated as "no discount available".
          */
-        (bool ok, bytes memory data) = address(staking).staticcall{gas: STAKING_READ_GAS}(
-            abi.encodeCall(ILeekStaking.discountBpsFor, (account))
-        );
+        (bool ok, bytes memory data) =
+            address(staking).staticcall{gas: STAKING_READ_GAS}(abi.encodeCall(ILeekStaking.discountBpsFor, (account)));
         if (!ok || data.length != 32) return base;
 
         uint256 raw = abi.decode(data, (uint256));
@@ -550,8 +549,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
             return;
         }
 
-        (bool notifyOk,) =
-            address(target).call{gas: STAKING_WRITE_GAS}(abi.encodeCall(ILeekStaking.notifyReward, ()));
+        (bool notifyOk,) = address(target).call{gas: STAKING_WRITE_GAS}(abi.encodeCall(ILeekStaking.notifyReward, ()));
         if (notifyOk) {
             emit RevenueRouted(amount);
         } else {
@@ -633,14 +631,10 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      exercise: a permit is EIP-712 typed data, which the device signs
      *      and displays, rather than a second blind approval.
      */
-    function redeemWithPermit(
-        uint256 shares,
-        uint256 minMusd,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external returns (uint256 musdOut) {
+    function redeemWithPermit(uint256 shares, uint256 minMusd, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        external
+        returns (uint256 musdOut)
+    {
         /*
          * A failed permit is not fatal, because the commonest cause is
          * somebody else having already submitted it.

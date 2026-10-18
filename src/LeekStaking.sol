@@ -88,7 +88,6 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     /// @notice May change the discount tiers, within `MAX_DISCOUNT_BPS`.
     bytes32 public constant TIER_ADMIN_ROLE = keccak256("TIER_ADMIN_ROLE");
 
-
     /**
      * @notice The largest share of a fee a tier may waive. 50%.
      * @dev Capped rather than open-ended because the fee is not only revenue:
@@ -400,7 +399,7 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
 
         /* The whole of `incoming` becomes a liability, not just the part the
            accumulator could represent.
-           
+
            This is the fix for a defect the invariant suite found and two
            earlier attempts papered over. Crediting only `perShare * supply`
            and leaving the remainder outside `rewardsOwed` meant the next call
@@ -409,7 +408,7 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
            credited it a second time. Across a few distributions the sum of
            everyone's `pending` then exceeded the revenue that had ever
            arrived, which is the contract inventing money.
-           
+
            Accounting for all of it is conservative in the safe direction: a
            few wei per distribution are owed to nobody in particular and stay
            in the contract. They are not lost to stakers as a class - they are
@@ -569,9 +568,7 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
          * was self-defeating. Empty return data with a successful call counts
          * as moved, which is SafeERC20's own tolerance.
          */
-        (bool ok, bytes memory ret) = address(musd).call(
-            abi.encodeCall(IERC20.transfer, (account, payable_))
-        );
+        (bool ok, bytes memory ret) = address(musd).call(abi.encodeCall(IERC20.transfer, (account, payable_)));
         bool moved = ok && (ret.length == 0 || abi.decode(ret, (bool)));
 
         if (moved) {

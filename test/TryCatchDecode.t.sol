@@ -35,8 +35,7 @@ contract Router {
 
     /// The low-level form, which tolerates empty returndata.
     function lowLevel(address token, address to, uint256 amount) external {
-        (bool success, bytes memory data) =
-            token.call(abi.encodeCall(IERC20.transfer, (to, amount)));
+        (bool success, bytes memory data) = token.call(abi.encodeCall(IERC20.transfer, (to, amount)));
         moved = success && (data.length == 0 || abi.decode(data, (bool)));
         caught = !success;
     }

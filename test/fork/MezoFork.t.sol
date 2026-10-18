@@ -210,8 +210,18 @@ contract MezoForkTest is Test {
     /* ------------------------------------------------------------- internals */
 
     function _deployPair() internal returns (IssuanceVault vault, ETFShare share) {
-        IndexOracle oracle =
-            new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        IndexOracle oracle = new IndexOracle(
+            "GOLOGGLE / MUSD",
+            FEED_DECIMALS,
+            2000,
+            STALENESS,
+            MIN_ROUND_INTERVAL,
+            WINDOW,
+            WINDOW_BPS,
+            admin,
+            publisher,
+            guardian
+        );
         vm.prank(publisher);
         oracle.publish(PRICE);
 

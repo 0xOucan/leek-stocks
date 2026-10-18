@@ -305,8 +305,7 @@ contract DeployMezoTestnet is Script {
 
         ETFFactory factory = new ETFFactory(IERC20(settlementToken), admin);
 
-        IndexOracle gologgleOracle =
-            _deployOracleAndPublishFirstRound(GOLOGGLE_FEED, GOLOGGLE_FIRST_ANSWER, deployer);
+        IndexOracle gologgleOracle = _deployOracleAndPublishFirstRound(GOLOGGLE_FEED, GOLOGGLE_FIRST_ANSWER, deployer);
         IndexOracle amezonOracle = _deployOracleAndPublishFirstRound(AMEZON_FEED, AMEZON_FIRST_ANSWER, deployer);
 
         /*
@@ -351,10 +350,7 @@ contract DeployMezoTestnet is Script {
             _assertDeployerDisarmed(amezonOracle, deployer);
 
             require(factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), admin), "admin does not administer the factory");
-            require(
-                !factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), deployer),
-                "deployer still administers the factory"
-            );
+            require(!factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), deployer), "deployer still administers the factory");
 
             console2.log("");
             console2.log("=== PHASE 1 COMPLETE. The admin must now run phase 2. ===");
@@ -511,8 +507,7 @@ contract DeployMezoTestnet is Script {
         // never a gate, and a tier that fired for an empty balance would mean
         // everyone trades at a discount and reserves are never topped up.
         require(
-            IssuanceVault(gologgleVault).effectiveFeeBps(deployer) == FEE_BPS,
-            "a non-staker should pay the full fee"
+            IssuanceVault(gologgleVault).effectiveFeeBps(deployer) == FEE_BPS, "a non-staker should pay the full fee"
         );
         require(staking.totalSupply() == 0, "staking should start empty");
     }

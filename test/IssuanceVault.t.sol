@@ -51,7 +51,18 @@ contract IssuanceVaultTest is Test {
     function setUp() public {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(MUSD_DECIMALS);
-        oracle = new IndexOracle("GOLOGGLE / MUSD", FEED_DECIMALS, 2000, STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        oracle = new IndexOracle(
+            "GOLOGGLE / MUSD",
+            FEED_DECIMALS,
+            2000,
+            STALENESS,
+            MIN_ROUND_INTERVAL,
+            WINDOW,
+            WINDOW_BPS,
+            admin,
+            publisher,
+            guardian
+        );
         vm.prank(publisher);
         oracle.publish(PRICE);
 
@@ -235,9 +246,7 @@ contract IssuanceVaultTest is Test {
         share.approve(address(vault), shares);
         uint256 owed = (shares * 240e18) / 1e18;
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(IssuanceVault.InsufficientReserves.selector, owed, vault.reserves())
-        );
+        vm.expectRevert(abi.encodeWithSelector(IssuanceVault.InsufficientReserves.selector, owed, vault.reserves()));
         vault.redeem(shares, 0);
 
         // The backstop is what makes them whole, and anyone may fund it.

@@ -210,5 +210,4 @@ contract ETFFactory is AccessControl {
     function vaultCount() external view returns (uint256) {
         return vaults.length;
     }
-
 }

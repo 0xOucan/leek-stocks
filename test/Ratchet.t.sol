@@ -98,7 +98,9 @@ contract RatchetTest is Test {
            interval that is two minutes of wall clock. With only the
            per-round bound this walk succeeded. */
         int256 price = START;
-        for (uint256 i = 0; i < 4; ++i) price += (price * int256(uint256(DEVIATION_BPS))) / 10_000;
+        for (uint256 i = 0; i < 4; ++i) {
+            price += (price * int256(uint256(DEVIATION_BPS))) / 10_000;
+        }
         assertGt(price, 2 * START, "four rounds of 20% no longer doubles; this test's premise is stale");
 
         // And now it does not, because the window's budget runs out first.

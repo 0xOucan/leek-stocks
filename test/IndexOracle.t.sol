@@ -33,7 +33,16 @@ contract IndexOracleTest is Test {
 
     function setUp() public {
         oracle = new IndexOracle(
-            "GOLOGGLE / MUSD", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian
+            "GOLOGGLE / MUSD",
+            DECIMALS,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MIN_ROUND_INTERVAL,
+            WINDOW,
+            WINDOW_BPS,
+            admin,
+            publisher,
+            guardian
         );
         // Timestamps start at 1 in Foundry; move clear of zero so that
         // "updatedAt == 0 means no round" cannot be satisfied accidentally.
@@ -66,29 +75,70 @@ contract IndexOracleTest is Test {
 
     function test_constructor_rejectsNonsense() public {
         vm.expectRevert(IndexOracle.ZeroAddress.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, address(0), publisher, guardian);
+        new IndexOracle(
+            "x",
+            DECIMALS,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MIN_ROUND_INTERVAL,
+            WINDOW,
+            WINDOW_BPS,
+            address(0),
+            publisher,
+            guardian
+        );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", 19, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        new IndexOracle(
+            "x",
+            19,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MIN_ROUND_INTERVAL,
+            WINDOW,
+            WINDOW_BPS,
+            admin,
+            publisher,
+            guardian
+        );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, 0, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        new IndexOracle(
+            "x", DECIMALS, 0, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian
+        );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, 10_001, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        new IndexOracle(
+            "x", DECIMALS, 10_001, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian
+        );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, 0, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        new IndexOracle(
+            "x", DECIMALS, MAX_DEVIATION_BPS, 0, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian
+        );
 
         // A zero interval would permit a burst of rounds in one block, which
         // is what compounds the deviation bound into a price attack.
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, 0, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        new IndexOracle(
+            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, 0, WINDOW, WINDOW_BPS, admin, publisher, guardian
+        );
 
         // An interval at or above staleness makes the feed stale before the
         // next round is even permitted.
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MAX_STALENESS, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        new IndexOracle(
+            "x",
+            DECIMALS,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MAX_STALENESS,
+            WINDOW,
+            WINDOW_BPS,
+            admin,
+            publisher,
+            guardian
+        );
 
         /* A window no longer than one round interval expires between rounds
            and therefore bounds nothing. That configuration would make the
@@ -96,24 +146,50 @@ contract IndexOracleTest is Test {
            worse than not having it. */
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
         new IndexOracle(
-            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL,
-            MIN_ROUND_INTERVAL, WINDOW_BPS, admin, publisher, guardian
+            "x",
+            DECIMALS,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MIN_ROUND_INTERVAL,
+            MIN_ROUND_INTERVAL,
+            WINDOW_BPS,
+            admin,
+            publisher,
+            guardian
         );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
         new IndexOracle(
-            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL,
-            WINDOW, 0, admin, publisher, guardian
+            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, 0, admin, publisher, guardian
         );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
         new IndexOracle(
-            "x", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL,
-            WINDOW, 10_001, admin, publisher, guardian
+            "x",
+            DECIMALS,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MIN_ROUND_INTERVAL,
+            WINDOW,
+            10_001,
+            admin,
+            publisher,
+            guardian
         );
 
         vm.expectRevert(IndexOracle.InvalidParameter.selector);
-        new IndexOracle("", DECIMALS, MAX_DEVIATION_BPS, MAX_STALENESS, MIN_ROUND_INTERVAL, WINDOW, WINDOW_BPS, admin, publisher, guardian);
+        new IndexOracle(
+            "",
+            DECIMALS,
+            MAX_DEVIATION_BPS,
+            MAX_STALENESS,
+            MIN_ROUND_INTERVAL,
+            WINDOW,
+            WINDOW_BPS,
+            admin,
+            publisher,
+            guardian
+        );
     }
 
     /* ----------------------------------------------------- empty feed */

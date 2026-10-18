@@ -202,7 +202,7 @@ contract LeekStakingInvariants is Test {
         }
         /* The bound carries one wei per holder, and the figure is derived
            rather than tuned.
-           
+
            `pending` is `floor(balance * acc / PREC) - rewardDebt`, where the
            debt was itself floored when it was set. Subtracting a quantity that
            rounded down inflates the difference, by strictly less than one wei

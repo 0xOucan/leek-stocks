@@ -33,6 +33,7 @@ contract LeekStakingTest is Test {
 
     /// The oracle-independent holding period the staking contract enforces.
     uint256 constant COOLDOWN = 1 hours;
+
     function setUp() public {
         mezo = new MockMUSD(18);
         musd = new MockMUSD(18);
@@ -348,9 +349,7 @@ contract LeekStakingTest is Test {
         // wrong reason.
         bytes32 role = staking.TIER_ADMIN_ROLE();
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, role)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, role));
         staking.setTiers(t);
     }
 
@@ -397,7 +396,7 @@ contract LeekStakingTest is Test {
         assertLe(owed, musd.balanceOf(address(staking)));
 
         /* Proportionality, compared without dividing.
-           
+
            This assertion has been wrong three times, each time because I
            gated it on the magnitude of the wrong quantity: first the stakes,
            then the revenue, then each holder's pending balance. All three
@@ -405,19 +404,19 @@ contract LeekStakingTest is Test {
            precision whenever the ratio itself is small - at a ratio of 3416
            there are four significant digits and one wei of truncation is
            0.03%, outside any sane tolerance.
-           
+
            Cross-multiplying removes the division, so there is nothing to
            gate and nothing to tune:
-           
+
                pendingAlice / pendingBob  ==  aliceStake / bobStake
            becomes
                pendingAlice * bobStake    ==  pendingBob * aliceStake
-           
+
            The tolerance that remains covers only the per-holder floor in
            `pending`, which is one wei against products of this size. */
         /* And a floor on each holder's pending, because cross-multiplying
            fixed the wrong half.
-           
+
            The division in the ratio was one source of error; `pending` itself
            is the other, and the bigger one. It is `floor(balance * acc / P)`,
            so a holder whose share works out to 192 wei carries a 0.3%
@@ -425,7 +424,7 @@ contract LeekStakingTest is Test {
            written. Below this floor the two quantities are not imprecise,
            they are not measurable. 1e6 wei leaves 1e-6 relative error against
            a 1e-5 tolerance.
-           
+
            Solvency above is asserted at every magnitude, including these, and
            it is the property that protects anybody. */
         uint256 pendingAlice = staking.pending(alice);
@@ -488,7 +487,7 @@ contract LeekStakingTest is Test {
 
     function test_aTopUpExtendsTheClockInProportionToItsSize() public {
         /* Not a full restart, which is the distinction that matters.
-           
+
            Restarting outright let a stranger block a staker's exit with one
            wei (test/CooldownGrief.t.sol). The extension is
            `cooldown * value / balanceAfter`, so adding 1 MUSD to 100 adds
@@ -510,7 +509,7 @@ contract LeekStakingTest is Test {
 
     function test_claimingIsGatedOnTheCooldownToo() public {
         /* This test asserted the opposite until the re-audit.
-           
+
            Gating only `unstake` left the reward leg of the flash-stake attack
            free: grow a position, take almost the whole distribution through
            `claim`, and only the principal had to wait. The entitlement is what

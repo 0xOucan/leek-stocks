@@ -231,7 +231,9 @@ contract IndexOracle is AccessControl, AggregatorV3Interface {
         address publisher,
         address guardian
     ) {
-        if (admin == address(0) || publisher == address(0) || guardian == address(0)) revert ZeroAddress();
+        if (admin == address(0) || publisher == address(0) || guardian == address(0)) {
+            revert ZeroAddress();
+        }
         // An 18-decimal answer multiplied by a bound is still far from
         // overflowing int256, but a decimals value above 18 is a typo, and a
         // zero deviation bound or staleness would freeze or void the feed.
