@@ -338,12 +338,20 @@ contract IssuanceVaultStakingTest is Test {
         vm.prank(admin);
         vault.setStaking(ILeekStaking(address(hostile)));
 
-        // The asymmetry this fixes: a reverting staking contract froze trades
-        // without ever setting `paused`, so no Paused event fired and
-        // `unpause` did nothing. The only remedy lived with the admin - the
-        // same key whose mistake caused it on a one-key deployment.
+        /* The unwire is only available while paused, so detaching staking is
+           a declared incident rather than a standing power: one address
+           holding both GUARDIAN and TREASURER could otherwise divert staker
+           revenue to feesAccrued and withdraw it with nothing but a
+           StakingSet(0) event to show. */
         vm.prank(guardian);
+        vm.expectRevert(IssuanceVault.NotPaused.selector);
         vault.emergencyUnsetStaking();
+
+        vm.startPrank(guardian);
+        vault.pause();
+        vault.emergencyUnsetStaking();
+        vault.unpause();
+        vm.stopPrank();
         assertEq(address(vault.staking()), address(0));
 
         vm.prank(alice);

@@ -118,7 +118,7 @@ contract LeekStakingTest is Test {
     }
 
     function test_claimLeavesTheStakeEarning() public {
-        _stake(alice, 100 * ONE);
+        _stakeAndWait(alice, 100 * ONE);
         _fund(10 * ONE);
 
         vm.prank(alice);
@@ -131,7 +131,7 @@ contract LeekStakingTest is Test {
     }
 
     function test_claimingTwicePaysOnce() public {
-        _stake(alice, 100 * ONE);
+        _stakeAndWait(alice, 100 * ONE);
         _fund(10 * ONE);
 
         vm.prank(alice);
@@ -508,15 +508,24 @@ contract LeekStakingTest is Test {
         staking.unstake(100 * ONE);
     }
 
-    function test_claimingDoesNotNeedTheCooldown() public {
-        // The cooldown is on the principal, not on earnings: a staker who
-        // leaves rewards unclaimed should not be pushed into unstaking to
-        // collect them.
+    function test_claimingIsGatedOnTheCooldownToo() public {
+        /* This test asserted the opposite until the re-audit.
+           
+           Gating only `unstake` left the reward leg of the flash-stake attack
+           free: grow a position, take almost the whole distribution through
+           `claim`, and only the principal had to wait. The entitlement is what
+           is being bought with time, not the withdrawal. */
         _stake(alice, 100 * ONE);
         _fund(10 * ONE);
+
         vm.prank(alice);
-        uint256 paid = staking.claim();
-        assertEq(paid, 10 * ONE);
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, COOLDOWN));
+        staking.claim();
+
+        // And the reward is not lost, only deferred.
+        skip(COOLDOWN);
+        vm.prank(alice);
+        assertEq(staking.claim(), 10 * ONE);
     }
 
     function test_theStakeAndRewardTokenCannotBeTheSame() public {

@@ -63,6 +63,26 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      trade without contributing to it at all.
      */
     uint16 public constant MAX_DISCOUNT_BPS = 5_000;
+
+    /**
+     * @notice Gas forwarded to a staking read, and to its accounting call.
+     *
+     * @dev Bounded because `try/catch` is not a defence against a callee that
+     *      burns gas. Solidity forwards all but 1/64 of what is left, so a
+     *      hostile target reached from `effectiveFeeBps` - which both `buy`
+     *      and `redeem` call near their start, before any state change - left
+     *      roughly 4.7k gas of a 300k limit to finish a trade needing over
+     *      100k. Every trade reverted out-of-gas, with no error selector and
+     *      nothing in the logs, and the guardian's unwire could be undone by
+     *      the admin in the next block.
+     *
+     *      An explicit stipend caps that at a bounded, catchable waste. The
+     *      values are generous against the real contract: `discountBpsFor`
+     *      walks at most 8 tiers (~40k measured) and `notifyReward` writes
+     *      five slots (~30k measured).
+     */
+    uint256 private constant STAKING_READ_GAS = 120_000;
+    uint256 private constant STAKING_WRITE_GAS = 300_000;
     uint256 private constant BPS = 10_000;
     uint256 private constant SHARE_ONE = 1e18;
 
@@ -130,8 +150,8 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     event RevenueRouted(uint256 amount);
     /// @notice MUSD reached the staking contract but was not accounted there.
     event RevenueStranded(uint256 amount);
-    /// @notice A staking read failed, so the trade charged the full fee.
-    event DiscountUnavailable();
+    /// @notice The guardian detached the staking contract during an incident.
+    event StakingEmergencyUnset();
     event ReserveShareSet(uint16 reserveShareBps);
     event ReservesTopped(uint256 amount, uint256 reservesAfter);
     event MaxSharesSet(uint256 maxShares);
@@ -144,6 +164,8 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     error FeeTooHigh(uint16 feeBps);
     error NotAContract(address target);
     error ShortTransfer(uint256 expected, uint256 received);
+    error NotPaused();
+    error CapAboveShareSupply(uint256 requested, uint256 shareMaxSupply);
     error ShareTooHigh(uint16 reserveShareBps);
     error ShareAlreadySet();
     error CapExceeded(uint256 supplyAfter, uint256 cap);
@@ -279,7 +301,11 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
          */
         uint256 balanceBefore = musd.balanceOf(address(this));
         musd.safeTransferFrom(msg.sender, address(this), musdAmount);
-        uint256 received = musd.balanceOf(address(this)) - balanceBefore;
+        uint256 balanceAfter = musd.balanceOf(address(this));
+        /* Guarded, so a balance that somehow fell across the transfer - a
+           negative rebase, a hook - reverts with ShortTransfer naming the
+           problem rather than panicking 0x11 on an underflow. */
+        uint256 received = balanceAfter > balanceBefore ? balanceAfter - balanceBefore : 0;
         if (received < musdAmount) revert ShortTransfer(musdAmount, received);
 
         share.mint(msg.sender, sharesOut);
@@ -337,7 +363,27 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
      *      only TREASURER_ROLE can reach it.
      */
     function emergencyUnsetStaking() external onlyRole(GUARDIAN_ROLE) {
+        /*
+         * Only while paused, so detaching staking is part of a declared
+         * incident rather than a standing power.
+         *
+         * The earlier version argued this was safe to delegate "because
+         * unsetting cannot take value: the treasury share simply accrues to
+         * feesAccrued, where only TREASURER_ROLE can reach it". That argument
+         * assumed guardian != treasurer, and nothing enforced it - both
+         * default to the admin in the deploy scripts. One address holding
+         * both could unset staking, let trading continue normally while every
+         * staker's rewards quietly stopped growing, and then withdraw the
+         * accumulated fees. The only trace was a StakingSet(0) event.
+         *
+         * Requiring `paused` does not stop a determined holder of both roles,
+         * but it makes the step loud: trading halts, Paused fires, and the
+         * two events sit together in the log. `registerIndex` now also
+         * refuses guardian == treasurer outright.
+         */
+        if (!paused) revert NotPaused();
         staking = ILeekStaking(address(0));
+        emit StakingEmergencyUnset();
         emit StakingSet(address(0));
     }
 
@@ -359,23 +405,30 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
 
         /*
          * A discount that cannot be read is a discount nobody gets, not a
-         * trade nobody can make. Before this, a staking contract that
-         * reverted in this view took `buy` and `redeem` down with it and
-         * holders could not exit.
+         * trade nobody can make.
          *
-         * try/catch covers a revert, a missing function and a bad return.
-         * It does not cover a callee that consumes all the gas it is given -
-         * nothing at this layer can, since Solidity forwards everything - so
-         * the address being a contract we deployed remains part of the trust
-         * model, and `emergencyUnsetStaking` is the escape.
+         * A low-level staticcall with an explicit gas stipend, not a typed
+         * `try`. Two reasons, both found by re-auditing the first attempt:
+         *
+         *   1. A typed `try … returns (uint16)` decodes the return data of a
+         *      *successful* call outside the catch frame, so a callee that
+         *      returns nothing - or short data - reverts uncatchably. The
+         *      catch was dead for a whole class of misbehaving callee.
+         *   2. `try` forwards all available gas, so a callee that burns it
+         *      left too little to finish the trade. This is called before any
+         *      state change in both `buy` and `redeem`, so that froze
+         *      everything including exits.
+         *
+         * Anything other than exactly 32 bytes of successful return data is
+         * treated as "no discount available".
          */
-        uint16 discount;
-        try staking.discountBpsFor(account) returns (uint16 d) {
-            discount = d;
-        } catch {
-            return base;
-        }
-        if (discount > MAX_DISCOUNT_BPS) discount = MAX_DISCOUNT_BPS;
+        (bool ok, bytes memory data) = address(staking).staticcall{gas: STAKING_READ_GAS}(
+            abi.encodeCall(ILeekStaking.discountBpsFor, (account))
+        );
+        if (!ok || data.length != 32) return base;
+
+        uint256 raw = abi.decode(data, (uint256));
+        uint16 discount = raw > MAX_DISCOUNT_BPS ? MAX_DISCOUNT_BPS : uint16(raw);
         // Multiply before dividing; the result is at most `base`, so the
         // narrowing cast cannot truncate.
         return uint16(base - (uint256(base) * discount) / BPS);
@@ -411,13 +464,15 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
          * subtraction inside `notifyReward` - and in every case the
          * consequence was that nobody could exit the vault.
          */
-        uint256 supply;
-        try target.totalSupply() returns (uint256 value) {
-            supply = value;
-        } catch {
+        /* Same treatment as the discount read: bounded, and tolerant of a
+           callee that returns the wrong shape. */
+        (bool supplyOk, bytes memory supplyData) =
+            address(target).staticcall{gas: STAKING_READ_GAS}(abi.encodeCall(ILeekStaking.totalSupply, ()));
+        if (!supplyOk || supplyData.length != 32) {
             feesAccrued += amount;
             return;
         }
+        uint256 supply = abi.decode(supplyData, (uint256));
         // The empty-state decision: `notifyReward` refuses a distribution to
         // a zero supply rather than stranding it or handing it to whoever
         // stakes first, so an unstaked period leaves the fee as revenue here.
@@ -427,28 +482,36 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         }
 
         /*
-         * A raw `transfer` in a try/catch rather than SafeERC20, which is the
-         * one place in this contract that does not use it. SafeERC20's
-         * helpers are internal, so a revert inside `safeTransfer` cannot be
-         * caught, and catching it is the entire point here: MUSD is
-         * upgradeable and a blocklist on the staking address would otherwise
-         * halt every trade. The return value is checked explicitly, which is
-         * what SafeERC20 would have done.
+         * The one place in this contract that does not use SafeERC20,
+         * because SafeERC20's helpers are internal and a revert inside
+         * `safeTransfer` cannot be caught - and catching it is the entire
+         * point: MUSD is upgradeable, and a blocklist on the staking address
+         * would otherwise halt every trade including exits.
+         *
+         * This was a typed `try … returns (bool)`, with a comment claiming
+         * it checked the return value "which is what SafeERC20 would have
+         * done". It did the opposite. SafeERC20 *tolerates* empty return
+         * data - the pre-2020 USDT shape - while a typed try reverts
+         * uncatchably on it, because the decode of a successful call happens
+         * outside the catch frame. test/TryCatchDecode.t.sol demonstrates
+         * both halves.
+         *
+         * So: a low-level call, and SafeERC20's own tolerance rebuilt
+         * explicitly. Empty return data with a successful call means moved.
          */
-        bool moved;
-        try IERC20(address(musd)).transfer(address(target), amount) returns (bool ok) {
-            moved = ok;
-        } catch {
-            moved = false;
-        }
+        (bool callOk, bytes memory transferData) =
+            address(musd).call(abi.encodeCall(IERC20.transfer, (address(target), amount)));
+        bool moved = callOk && (transferData.length == 0 || abi.decode(transferData, (bool)));
         if (!moved) {
             feesAccrued += amount;
             return;
         }
 
-        try target.notifyReward() {
+        (bool notifyOk,) =
+            address(target).call{gas: STAKING_WRITE_GAS}(abi.encodeCall(ILeekStaking.notifyReward, ()));
+        if (notifyOk) {
             emit RevenueRouted(amount);
-        } catch {
+        } else {
             /* The MUSD has already left this contract, so it cannot be
                credited to `feesAccrued` - that would count it twice. It is
                not lost: it sits in the staking contract's balance and the
@@ -556,7 +619,8 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
         // donation cannot be over-reported by a fee-charging token.
         uint256 balanceBefore = musd.balanceOf(address(this));
         musd.safeTransferFrom(msg.sender, address(this), amount);
-        uint256 received = musd.balanceOf(address(this)) - balanceBefore;
+        uint256 balanceAfter = musd.balanceOf(address(this));
+        uint256 received = balanceAfter > balanceBefore ? balanceAfter - balanceBefore : 0;
         emit Funded(msg.sender, received);
     }
 
@@ -599,6 +663,17 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
 
     function setMaxShares(uint256 newMaxShares) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newMaxShares == 0) revert ZeroAmount();
+        /*
+         * Bounded by the share token's immutable ceiling, because raising it
+         * past that was a silent lie. `MaxSharesSet` fired and `maxShares()`
+         * read back the new value, so the change looked applied - then at the
+         * old ceiling `buy` began reverting `ETFShare.CapExceeded` naming a
+         * cap this contract does not report, from a contract the front end is
+         * not quoting. Lowering still works; it is the raise that could not.
+         */
+        if (address(share) != address(0) && newMaxShares > share.maxSupply()) {
+            revert CapAboveShareSupply(newMaxShares, share.maxSupply());
+        }
         maxShares = newMaxShares;
         emit MaxSharesSet(newMaxShares);
     }

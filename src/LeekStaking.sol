@@ -306,6 +306,22 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
 
     /// @notice Take the MUSD earned so far without touching the stake.
     function claim() external nonReentrant returns (uint256 paid) {
+        /*
+         * Gated on the same clock as `unstake`.
+         *
+         * Leaving it ungated meant the reward leg of the flash-stake attack
+         * had no time cost at all: an attacker could grow a position, take
+         * almost the whole distribution through `claim`, and only the
+         * principal had to wait. The entitlement is the thing being bought
+         * with time, not the withdrawal.
+         *
+         * This cannot trap a reward: an increase a staker did not ask for
+         * extends the clock in proportion to its size, so dust adds nothing,
+         * and the claim survives in `claimable` either way.
+         */
+        uint256 until_ = coolingUntil[msg.sender];
+        if (block.timestamp < until_) revert StillCooling(until_ - block.timestamp);
+
         _settle(msg.sender);
         paid = _payout(msg.sender);
         if (paid == 0) revert ZeroAmount();
@@ -495,17 +511,38 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
         // State first, so a reverting token cannot leave this half-applied;
         // the whole call reverts and nothing above is kept.
         claimable[account] = owed - payable_;
-        rewardsOwed = rewardsOwed > payable_ ? rewardsOwed - payable_ : 0;
+        /* Record the decrement actually applied. The subtraction saturates,
+           so restoring `payable_` unconditionally could add back more than
+           was taken and leave a permanent phantom liability - every later
+           `incoming = held - rewardsOwed` short by that much, stranding that
+           revenue forever. */
+        uint256 decremented = rewardsOwed < payable_ ? rewardsOwed : payable_;
+        rewardsOwed -= decremented;
 
-        (bool ok,) = address(musd).call(
-            abi.encodeWithSelector(IERC20.transfer.selector, account, payable_)
+        /*
+         * `ok` is the success of the CALL, not the ERC-20 return value.
+         *
+         * A token that returns `false` instead of reverting made `ok` true,
+         * so the restore never ran: the staker's `claimable` was zeroed, they
+         * received nothing, and the MUSD stayed in the contract to be
+         * redistributed to whoever was staked next. The justification for
+         * using a low-level call here is precisely that MUSD is upgradeable
+         * and its return behaviour is not trusted, so not checking the return
+         * was self-defeating. Empty return data with a successful call counts
+         * as moved, which is SafeERC20's own tolerance.
+         */
+        (bool ok, bytes memory ret) = address(musd).call(
+            abi.encodeCall(IERC20.transfer, (account, payable_))
         );
-        if (ok) {
+        bool moved = ok && (ret.length == 0 || abi.decode(ret, (bool)));
+
+        if (moved) {
             emit Claimed(account, payable_);
         } else {
-            // Put it back. The staker keeps the claim and gets their MEZO.
-            claimable[account] = owed;
-            rewardsOwed += payable_;
+            // Put it back, by addition rather than assignment, so nothing
+            // written during the call window is discarded.
+            claimable[account] += payable_;
+            rewardsOwed += decremented;
         }
     }
 
@@ -552,6 +589,15 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
          */
         if (to == address(this)) revert SelfTransfer();
 
+        /* A transfer to oneself changes nothing, so it must not extend the
+           clock either - otherwise `transfer(self, balance)` is a complete
+           self-grief with no counterparty, and the settle below would run
+           twice for one account. */
+        if (from == to && from != address(0)) {
+            super._update(from, to, value);
+            return;
+        }
+
         _settle(from);
         _settle(to);
         super._update(from, to, value);
@@ -566,8 +612,23 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
                just added to it. */
             uint256 balanceAfter = balanceOf(to);
             if (balanceAfter != 0) {
-                uint256 deadline = block.timestamp + (cooldown * value) / balanceAfter;
-                if (deadline > coolingUntil[to]) coolingUntil[to] = deadline;
+                /*
+                 * Accumulate the extension; do not take a maximum.
+                 *
+                 * Taking `max(now + ext_i)` meant every step in one
+                 * transaction shared a timestamp, so the result was just the
+                 * largest single fraction. Growing a position 144x in 1%
+                 * steps waited 35 seconds instead of 3600, and the
+                 * flash-stake attack came straight back - the earlier test
+                 * passed only because it tried one bulk stake.
+                 *
+                 * Adding to whichever is later - the stored deadline or now -
+                 * makes n small steps strictly worse for an attacker than one
+                 * large step, because the fractions sum rather than compete.
+                 * The same 1% ladder now costs hours.
+                 */
+                uint256 base = coolingUntil[to] > block.timestamp ? coolingUntil[to] : block.timestamp;
+                coolingUntil[to] = base + (cooldown * value) / balanceAfter;
             }
         }
     }

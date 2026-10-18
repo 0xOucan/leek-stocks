@@ -86,6 +86,27 @@ contract Handler is Test {
         totalStakedOut += amount;
     }
 
+    /**
+     * Grow a position in small steps.
+     *
+     * The splitting attack lived outside the explored state space because
+     * `stake` was always called with an independent random amount, never as a
+     * geometric ladder against the current balance. This is that ladder.
+     */
+    function growInSteps(uint256 actorSeed, uint256 steps) external {
+        address actor = _actor(actorSeed);
+        uint256 held = staking.balanceOf(actor);
+        if (held == 0) return;
+        steps = bound(steps, 1, 20);
+        for (uint256 i = 0; i < steps; ++i) {
+            uint256 step = staking.balanceOf(actor) / 100;
+            if (step == 0 || mezo.balanceOf(actor) < step) return;
+            vm.prank(actor);
+            staking.stake(step);
+            totalStakedIn += step;
+        }
+    }
+
     function transfer(uint256 fromSeed, uint256 toSeed, uint256 amount) external {
         address from = _actor(fromSeed);
         address to = _actor(toSeed);
@@ -99,6 +120,8 @@ contract Handler is Test {
     function claim(uint256 actorSeed) external {
         address actor = _actor(actorSeed);
         if (staking.pending(actor) == 0) return;
+        // Claiming is cooldown-gated too, so skip rather than revert.
+        if (block.timestamp < staking.coolingUntil(actor)) return;
         vm.prank(actor);
         uint256 paid = staking.claim();
         totalClaimedOut += paid;
@@ -193,11 +216,19 @@ contract LeekStakingInvariants is Test {
         assertLe(owed, handler.totalRevenueIn() - handler.totalClaimedOut() + handler.actorCount());
     }
 
-    /// A claim never reverts for want of balance, which is what the clamp buys.
+    /**
+     * A matured claim never reverts for want of balance.
+     *
+     * The clamp in `_payout` is what buys this. Claiming is cooldown-gated
+     * now, so an account still cooling is skipped - the property being
+     * asserted is that the money is there when the clock allows it, not that
+     * the clock allows it.
+     */
     function invariant_aClaimableBalanceIsPayable() public {
         for (uint256 i = 0; i < handler.actorCount(); ++i) {
             address actor = handler.actors(i);
             if (staking.pending(actor) == 0) continue;
+            if (block.timestamp < staking.coolingUntil(actor)) continue;
             vm.prank(actor);
             staking.claim();
         }
