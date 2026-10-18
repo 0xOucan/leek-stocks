@@ -60,6 +60,7 @@ contract AdminTheftTest is Test {
         factory = new ETFFactory(IERC20(address(musd)), admin);
         vm.prank(admin);
         factory.registerIndex("GOLOGGLE", oracle, 1 hours, 50, 5000, 1_000_000e18, guardian, treasury);
+        vm.prank(admin);
         (address s, address v) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         share = ETFShare(s);
         vault = IssuanceVault(v);

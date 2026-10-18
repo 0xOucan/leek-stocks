@@ -243,10 +243,68 @@ contract DeployMezoTestnet is Script {
             _deployOracleAndPublishFirstRound(GOLOGGLE_FEED, GOLOGGLE_FIRST_ANSWER, deployer);
         IndexOracle amezonOracle = _deployOracleAndPublishFirstRound(AMEZON_FEED, AMEZON_FIRST_ANSWER, deployer);
 
-        // registerIndex is admin-gated, so a deployment whose admin is a
-        // separate key stops here and the admin finishes it. Said out loud
-        // instead of silently reverting.
-        require(admin == deployer, "ADMIN is not the sender: the admin must call registerIndex/deployETF itself");
+        /*
+         * Everything from here is admin-gated, so with a separate admin this
+         * script deploys and stops.
+         *
+         * It used to `require(admin == deployer)`, which aborted the run
+         * instead - and that had a consequence worth spelling out, because it
+         * is the opposite of what the code looked like it did. The hand-over
+         * branches above (`if (admin != deployer) grantRole/renounceRole`)
+         * execute, and then the require reverts the whole broadcast. So the
+         * branches were dead code in every run that *completed*, and the only
+         * completing configuration was one hot key holding
+         * DEFAULT_ADMIN_ROLE on the factory, both vaults, both share tokens,
+         * both oracles and the staking contract, with nothing ever
+         * renounced. That single key is what made the two reserve drains in
+         * test/AdminTheft.t.sol reachable.
+         *
+         * Now a separate admin is a supported, two-phase deployment: this
+         * phase deploys and hands over, and ConfigureMezoTestnet.s.sol is
+         * what the admin runs next.
+         */
+        if (admin != deployer) {
+            vm.stopBroadcast();
+
+            /* Asserted, not asserted-in-a-comment. The whole point of the
+               two-phase split is that the deployer walks away with nothing,
+               and a script that prints that claim without checking it is how
+               the previous version came to have dead hand-over code. */
+            require(
+                !gologgleOracle.hasRole(gologgleOracle.DEFAULT_ADMIN_ROLE(), deployer)
+                    && !amezonOracle.hasRole(amezonOracle.DEFAULT_ADMIN_ROLE(), deployer),
+                "deployer still administers an oracle"
+            );
+            require(
+                gologgleOracle.hasRole(gologgleOracle.DEFAULT_ADMIN_ROLE(), admin)
+                    && amezonOracle.hasRole(amezonOracle.DEFAULT_ADMIN_ROLE(), admin),
+                "admin does not administer the oracles"
+            );
+            require(factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), admin), "admin does not administer the factory");
+            require(
+                !factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), deployer),
+                "deployer still administers the factory"
+            );
+            if (publisher != deployer) {
+                require(
+                    !gologgleOracle.hasRole(gologgleOracle.PUBLISHER_ROLE(), deployer),
+                    "deployer can still publish"
+                );
+            }
+
+            console2.log("");
+            console2.log("=== PHASE 1 COMPLETE. The admin must now run phase 2. ===");
+            console2.log("factory          ", address(factory));
+            console2.log("GOLOGGLE oracle  ", address(gologgleOracle));
+            console2.log("AMEZON oracle    ", address(amezonOracle));
+            console2.log("settlement token ", settlementToken);
+            console2.log("");
+            console2.log("The deployer holds no roles on the oracles. Run, as ADMIN:");
+            console2.log("  FACTORY=<factory> GOLOGGLE_ORACLE=<...> AMEZON_ORACLE=<...> \\");
+            console2.log("  forge script script/ConfigureMezoTestnet.s.sol --rpc-url mezo_testnet \\");
+            console2.log("    --account <admin> --sender <admin> --broadcast --slow");
+            return;
+        }
 
         factory.registerIndex(
             GOLOGGLE_SYMBOL, gologgleOracle, MAX_STALENESS, FEE_BPS, RESERVE_SHARE_BPS, MAX_SHARES, guardian, treasurer
@@ -307,13 +365,16 @@ contract DeployMezoTestnet is Script {
         );
         oracle.publish(firstAnswer);
 
+        /* Grant first, renounce second, admin last of all - renouncing admin
+           before the other grants would strip the ability to make them. These
+           branches used to be unreachable in any completing run; see the note
+           in run(). */
         if (publisher != deployer) oracle.grantRole(oracle.PUBLISHER_ROLE(), publisher);
         if (guardian != deployer) oracle.grantRole(oracle.GUARDIAN_ROLE(), guardian);
         if (admin != deployer) oracle.grantRole(oracle.DEFAULT_ADMIN_ROLE(), admin);
 
         if (publisher != deployer) oracle.renounceRole(oracle.PUBLISHER_ROLE(), deployer);
         if (guardian != deployer) oracle.renounceRole(oracle.GUARDIAN_ROLE(), deployer);
-        // Last, since renouncing admin first would strip the ability to grant.
         if (admin != deployer) oracle.renounceRole(oracle.DEFAULT_ADMIN_ROLE(), deployer);
     }
 

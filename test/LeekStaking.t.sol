@@ -396,29 +396,45 @@ contract LeekStakingTest is Test {
            money taken from whoever withdraws last. */
         assertLe(owed, musd.balanceOf(address(staking)));
 
-        /* Proportionality is asserted only where it is measurable.
+        /* Proportionality, compared without dividing.
            
-           The tolerance is 1e-4 relative, and each holder's `pending` is a
-           floored quantity, so the comparison is meaningless unless both
-           pendings are large enough that one wei of truncation sits well
-           inside that tolerance. Gating on the stakes or on the revenue - my
-           first two attempts - gates on the wrong quantity: what matters is
-           the size of the result, not of the inputs, because a large stake
-           and a large revenue can still produce a small per-holder pending
-           when the supply is larger still. 1e6 wei gives 1e-6 relative
-           error against a 1e-4 tolerance, two orders of margin.
+           This assertion has been wrong three times, each time because I
+           gated it on the magnitude of the wrong quantity: first the stakes,
+           then the revenue, then each holder's pending balance. All three
+           miss the real problem, which is that forming a RATIO throws away
+           precision whenever the ratio itself is small - at a ratio of 3416
+           there are four significant digits and one wei of truncation is
+           0.03%, outside any sane tolerance.
            
-           Solvency above is asserted unconditionally at every magnitude, and
-           it is the property that actually protects anybody; this one is a
-           statement about fairness in the range where fairness is
-           expressible. */
+           Cross-multiplying removes the division, so there is nothing to
+           gate and nothing to tune:
+           
+               pendingAlice / pendingBob  ==  aliceStake / bobStake
+           becomes
+               pendingAlice * bobStake    ==  pendingBob * aliceStake
+           
+           The tolerance that remains covers only the per-holder floor in
+           `pending`, which is one wei against products of this size. */
+        /* And a floor on each holder's pending, because cross-multiplying
+           fixed the wrong half.
+           
+           The division in the ratio was one source of error; `pending` itself
+           is the other, and the bigger one. It is `floor(balance * acc / P)`,
+           so a holder whose share works out to 192 wei carries a 0.3%
+           truncation of its own no matter how the comparison is then
+           written. Below this floor the two quantities are not imprecise,
+           they are not measurable. 1e6 wei leaves 1e-6 relative error against
+           a 1e-5 tolerance.
+           
+           Solvency above is asserted at every magnitude, including these, and
+           it is the property that protects anybody. */
         uint256 pendingAlice = staking.pending(alice);
         uint256 pendingBob = staking.pending(bob);
         if (pendingAlice >= 1e6 && pendingBob >= 1e6) {
             assertApproxEqRel(
-                (pendingAlice * 1e18) / pendingBob,
-                (aliceStake * 1e18) / bobStake,
-                1e14 // 0.01%
+                pendingAlice * bobStake,
+                pendingBob * aliceStake,
+                1e13 // 0.001%
             );
         }
     }

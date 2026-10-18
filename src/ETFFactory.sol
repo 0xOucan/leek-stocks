@@ -126,13 +126,28 @@ contract ETFFactory is AccessControl {
 
     /**
      * @notice Deploy the share token and vault for a registered symbol.
-     * @dev Permissionless on purpose: the configuration is already frozen, so
-     *      there is nothing for a caller to choose and nothing to gate. The
-     *      roles on the deployed pair go to this factory's admin, not to the
-     *      caller.
+     *
+     * @dev Admin-gated. This used to be permissionless, on the argument that
+     *      "the configuration is already frozen, so there is nothing for a
+     *      caller to choose". The configuration is frozen; `name` is not.
+     *
+     *      Only `symbol` is the registry key, so once an index is registered
+     *      anyone could front-run the admin's own call with their own `name`
+     *      string. `vaultFor[key]` is then written, the admin's call reverts
+     *      with `AlreadyDeployed`, `registerIndex` cannot be redone, and
+     *      there is no reset anywhere in this contract - so the share token's
+     *      `name()` is the stranger's text forever, on an otherwise correctly
+     *      configured vault whose roles went to the honest admin. Every front
+     *      end and explorer keyed on the symbol would display it, and
+     *      recovery needs a new factory and a new symbol.
+     *
+     *      Not a theft path, since the roles and the config are right either
+     *      way. A permanent, unrecoverable hijack of the user-visible
+     *      identity, available to anybody, which a modifier closes.
      */
     function deployETF(string calldata name, string calldata symbol)
         external
+        onlyRole(DEFAULT_ADMIN_ROLE)
         returns (address shareAddress, address vaultAddress)
     {
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();

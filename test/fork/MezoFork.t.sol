@@ -214,6 +214,7 @@ contract MezoForkTest is Test {
         ETFFactory factory = new ETFFactory(IERC20(MUSD), admin);
         vm.prank(admin);
         factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, 5000, CAP, guardian, treasurer);
+        vm.prank(admin);
         (address shareAddress, address vaultAddress) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         return (IssuanceVault(vaultAddress), ETFShare(shareAddress));
     }

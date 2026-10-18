@@ -54,6 +54,7 @@ contract IssuanceVaultStakingTest is Test {
         factory = new ETFFactory(IERC20(address(musd)), admin);
         vm.prank(admin);
         factory.registerIndex("GOLOGGLE", oracle, 1 hours, FEE_BPS, RESERVE_SHARE_BPS, 1_000_000e18, guardian, treasury);
+        vm.prank(admin);
         (address shareAddress, address vaultAddress) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         share = ETFShare(shareAddress);
         vault = IssuanceVault(vaultAddress);

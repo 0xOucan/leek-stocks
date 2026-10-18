@@ -54,6 +54,7 @@ contract IssuanceVaultTest is Test {
         factory = new ETFFactory(IERC20(address(musd)), admin);
         vm.prank(admin);
         factory.registerIndex("GOLOGGLE", oracle, STALENESS, FEE_BPS, RESERVE_SHARE_BPS, CAP, guardian, treasury);
+        vm.prank(admin);
         (address shareAddress, address vaultAddress) = factory.deployETF("Gologgle Index", "GOLOGGLE");
         share = ETFShare(shareAddress);
         vault = IssuanceVault(vaultAddress);
@@ -97,9 +98,11 @@ contract IssuanceVaultTest is Test {
     }
 
     function test_factoryRefusesUnregisteredAndDuplicate() public {
+        vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(ETFFactory.NotRegistered.selector, "AMEZON"));
         factory.deployETF("Amezon Index", "AMEZON");
 
+        vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(ETFFactory.AlreadyDeployed.selector, "GOLOGGLE"));
         factory.deployETF("Gologgle Index", "GOLOGGLE");
 
