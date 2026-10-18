@@ -202,9 +202,16 @@ settings:
 
 | Staked MEZO | Discount | Fee paid |
 |---|---|---|
-| 100 | 10% | 0.45% |
-| 1,000 | 25% | 0.375% |
-| 5,000 | 50% | 0.25% |
+| 1 | 10% | 0.45% |
+| 10 | 25% | 0.375% |
+| 50 | 50% | 0.25% |
+
+**Those thresholds are what a testnet faucet hands out, not a schedule.** They
+were 100 / 1,000 / 5,000, which reads like a real one and was checked against
+nothing: the deployer holds 100 MEZO, so the top two tiers were unreachable
+and the bottom one cost the whole balance. A tier nobody on the chain can
+reach is a tier that has not been tested. The discounts are the economic
+claim and are unchanged; only the thresholds moved.
 
 `MAX_DISCOUNT_BPS` is 5000, so the fee can never be discounted below half
 whatever a future tier says, and `tierAt`/`tierCount` are public so the dapp

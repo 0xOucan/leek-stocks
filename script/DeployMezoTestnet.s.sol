@@ -107,11 +107,27 @@ contract DeployMezoTestnet is Script {
     /*
      * Stake MEZO, pay less fee, and earn the rest of the fee others pay.
      *
-     * The first tier is deliberately within reach of one faucet claim, so a
-     * tester can see the discount without acquiring MEZO some other way. The
-     * top tier is LeekStaking's own MAX_DISCOUNT_BPS and is capped there in
-     * two contracts independently: part of every fee is the reserve top-up
-     * that keeps redemption solvent, so no stake may waive all of it.
+     * The thresholds are set to what is obtainable on Mezo TESTNET, not to
+     * what a mainnet schedule would use, and the difference is large enough
+     * to be worth stating.
+     *
+     * They were 100 / 1,000 / 5,000 MEZO, which reads like a real schedule
+     * and was checked against nothing. The deployer account holds **100
+     * MEZO**, so the top two tiers were unreachable and the bottom one cost
+     * the entire balance: the headline integration would have demoed at its
+     * weakest setting, with no MEZO left over for a second wallet, and a
+     * judge clicking through would have seen a 10% discount and an
+     * unexplained table of two tiers nobody can buy. A tier schedule nobody
+     * on the chain can reach is a schedule that has not been tested.
+     *
+     * 1 / 10 / 50 makes all three reachable from one balance and still leaves
+     * half of it spare. The DISCOUNTS are unchanged, because those are the
+     * economic claim; only the thresholds move, because those are a function
+     * of what a testnet faucet hands out.
+     *
+     * The top tier is LeekStaking's own MAX_DISCOUNT_BPS and is capped there
+     * in two contracts independently: part of every fee is the reserve
+     * top-up that keeps redemption solvent, so no stake may waive all of it.
      */
     /**
      * @dev Seconds a stake must sit before it can be unstaked or earn a
@@ -122,11 +138,11 @@ contract DeployMezoTestnet is Script {
      */
     uint256 constant STAKING_COOLDOWN = 1 hours;
 
-    uint256 constant TIER_1_STAKE = 100e18;
+    uint256 constant TIER_1_STAKE = 1e18;
     uint16 constant TIER_1_DISCOUNT_BPS = 1_000; // 10% off the fee
-    uint256 constant TIER_2_STAKE = 1_000e18;
+    uint256 constant TIER_2_STAKE = 10e18;
     uint16 constant TIER_2_DISCOUNT_BPS = 2_500;
-    uint256 constant TIER_3_STAKE = 5_000e18;
+    uint256 constant TIER_3_STAKE = 50e18;
     uint16 constant TIER_3_DISCOUNT_BPS = 5_000; // the cap
 
     /* ------------------------------------------------------------- the indices */
