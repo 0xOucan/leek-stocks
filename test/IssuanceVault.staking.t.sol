@@ -10,6 +10,7 @@ import {IssuanceVault} from "../src/IssuanceVault.sol";
 import {LeekStaking} from "../src/LeekStaking.sol";
 import {ILeekStaking} from "../src/interfaces/ILeekStaking.sol";
 import {MockMUSD} from "./mocks/MockMUSD.sol";
+import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 
 /**
  * The vault's half of the staking mechanism.
@@ -371,6 +372,29 @@ contract IssuanceVaultStakingTest is Test {
         // balance rather than trusting an argument.
         assertEq(vault.feesAccrued(), 0);
         assertEq(musd.balanceOf(address(half)), 2.5e18);
+    }
+
+    function test_buyRefusesAFeeChargingSettlementToken() public {
+        // The symmetry with LeekStaking.stake, asserted. A vault that minted
+        // shares against MUSD it did not receive would under-fund liabilities
+        // from the first trade and compound the gap with volume.
+        MockFeeToken fot = new MockFeeToken(100); // 1%
+        IndexOracle o = new IndexOracle("X / MUSD", 8, 2000, 1 hours, 30, admin, publisher, guardian);
+        vm.prank(publisher);
+        o.publish(100e8);
+
+        ETFFactory f = new ETFFactory(IERC20(address(fot)), admin);
+        vm.startPrank(admin);
+        f.registerIndex("X", o, 1 hours, FEE_BPS, RESERVE_SHARE_BPS, 1_000_000e18, guardian, treasury);
+        (, address v) = f.deployETF("X Index", "X");
+        vm.stopPrank();
+
+        fot.mint(alice, 10_000e18);
+        vm.startPrank(alice);
+        fot.approve(v, type(uint256).max);
+        vm.expectRevert();
+        IssuanceVault(v).buy(1_000e18, 0);
+        vm.stopPrank();
     }
 }
 

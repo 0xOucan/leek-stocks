@@ -143,6 +143,7 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     error VaultPaused();
     error FeeTooHigh(uint16 feeBps);
     error NotAContract(address target);
+    error ShortTransfer(uint256 expected, uint256 received);
     error ShareTooHigh(uint16 reserveShareBps);
     error ShareAlreadySet();
     error CapExceeded(uint256 supplyAfter, uint256 cap);
@@ -261,7 +262,26 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
            treasury's half is the remainder, which keeps the two halves
            summing to exactly `fee` with no wei stranded in neither pot. */
         uint256 toReserves = (musdAmount * fee_ * reserveShareBps) / (BPS * BPS);
+
+        /*
+         * Price the shares off what arrived, not off what was asked for.
+         *
+         * MUSD is upgradeable. If it ever charges a transfer fee, this
+         * contract receives less than `musdAmount` while minting shares
+         * computed from the full `musdAmount`, so `reserves()` under-funds
+         * `liabilities()` from the very first trade and the gap compounds
+         * with volume. LeekStaking.stake already measures its own delta for
+         * exactly this reason; the technique was in the codebase and not
+         * applied at the one place where MUSD is the token being pulled.
+         *
+         * In the normal case `received == musdAmount` and this costs one
+         * extra balance read.
+         */
+        uint256 balanceBefore = musd.balanceOf(address(this));
         musd.safeTransferFrom(msg.sender, address(this), musdAmount);
+        uint256 received = musd.balanceOf(address(this)) - balanceBefore;
+        if (received < musdAmount) revert ShortTransfer(musdAmount, received);
+
         share.mint(msg.sender, sharesOut);
         if (toReserves != 0) emit ReservesTopped(toReserves, reserves());
 
@@ -532,8 +552,12 @@ contract IssuanceVault is AccessControl, ReentrancyGuard {
     /// @notice Add MUSD to reserves without minting shares. The backstop.
     function fund(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
+        // The amount in the event is what the reserves actually gained, so a
+        // donation cannot be over-reported by a fee-charging token.
+        uint256 balanceBefore = musd.balanceOf(address(this));
         musd.safeTransferFrom(msg.sender, address(this), amount);
-        emit Funded(msg.sender, amount);
+        uint256 received = musd.balanceOf(address(this)) - balanceBefore;
+        emit Funded(msg.sender, received);
     }
 
     /**
