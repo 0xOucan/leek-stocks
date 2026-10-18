@@ -31,10 +31,12 @@ contract LeekStakingTest is Test {
 
     uint256 constant ONE = 1e18;
 
+    /// The oracle-independent holding period the staking contract enforces.
+    uint256 constant COOLDOWN = 1 hours;
     function setUp() public {
         mezo = new MockMUSD(18);
         musd = new MockMUSD(18);
-        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin);
+        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin, COOLDOWN);
 
         for (uint256 i = 0; i < 3; ++i) {
             address who = [alice, bob, carol][i];
@@ -53,6 +55,19 @@ contract LeekStakingTest is Test {
     function _stake(address who, uint256 amount) internal {
         vm.prank(who);
         staking.stake(amount);
+    }
+
+    /**
+     * Stake and wait out the cooldown.
+     *
+     * Most tests here are about reward arithmetic or discount tiers, not
+     * about the holding period, and a stake that cannot be unstaked makes
+     * those tests assert the cooldown by accident. The cooldown has its own
+     * tests at the bottom of this file.
+     */
+    function _stakeAndWait(address who, uint256 amount) internal {
+        _stake(who, amount);
+        skip(1 hours);
     }
 
     /* ------------------------------------------------------- distribution */
@@ -85,8 +100,8 @@ contract LeekStakingTest is Test {
     }
 
     function test_unstakingStopsFutureEarningsButKeepsPastOnes() public {
-        _stake(alice, 100 * ONE);
-        _stake(bob, 100 * ONE);
+        _stakeAndWait(alice, 100 * ONE);
+        _stakeAndWait(bob, 100 * ONE);
         _fund(10 * ONE);
 
         // Alice leaves. Her 5 MUSD is paid out with the stake, not forfeited.
@@ -225,12 +240,13 @@ contract LeekStakingTest is Test {
 
     function test_sMezoIsMintedFromWhatArrivedNotWhatWasAsked() public {
         MockFeeToken fot = new MockFeeToken(100); // 1%
-        LeekStaking s = new LeekStaking(IERC20(address(fot)), IERC20(address(musd)), admin);
+        LeekStaking s = new LeekStaking(IERC20(address(fot)), IERC20(address(musd)), admin, COOLDOWN);
         fot.mint(alice, 1_000 * ONE);
         vm.startPrank(alice);
         fot.approve(address(s), type(uint256).max);
         s.stake(100 * ONE);
         vm.stopPrank();
+        skip(1 hours);
 
         // 1% was taken in flight, so 99 arrived and 99 sMEZO must exist.
         assertEq(s.totalSupply(), 99 * ONE);
@@ -260,32 +276,43 @@ contract LeekStakingTest is Test {
 
     function test_theDiscountIsTheHighestTierReached() public {
         _threeTiers();
-        _stake(alice, 100 * ONE);
+        _stakeAndWait(alice, 100 * ONE);
         assertEq(staking.discountBpsFor(alice), 1_000);
 
         mezo.mint(alice, 5_000 * ONE);
-        _stake(alice, 900 * ONE);
+        _stakeAndWait(alice, 900 * ONE);
         assertEq(staking.discountBpsFor(alice), 2_500);
 
-        _stake(alice, 4_000 * ONE);
+        _stakeAndWait(alice, 4_000 * ONE);
         assertEq(staking.discountBpsFor(alice), 5_000);
     }
 
     function test_oneWeiBelowATierDoesNotEarnIt() public {
         _threeTiers();
-        _stake(alice, 100 * ONE - 1);
+        _stakeAndWait(alice, 100 * ONE - 1);
         assertEq(staking.discountBpsFor(alice), 0);
     }
 
-    function test_sendingTheReceiptAwaySendsTheDiscountWithIt() public {
-        // A consequence of transferability worth asserting rather than
-        // discovering: the discount follows the balance, not the staker.
+    function test_sendingTheReceiptAwayMovesTheDiscountButResetsItsClock() public {
+        // Two consequences of transferability, both worth asserting rather
+        // than discovering: the discount follows the balance and not the
+        // staker, and it arrives un-earned.
         _threeTiers();
-        _stake(alice, 100 * ONE);
+        _stakeAndWait(alice, 100 * ONE);
+        assertEq(staking.discountBpsFor(alice), 1_000);
+
         vm.prank(alice);
         staking.transfer(bob, 100 * ONE);
+
+        // Alice gave it away.
         assertEq(staking.discountBpsFor(alice), 0);
-        assertEq(staking.discountBpsFor(bob), 1_000);
+        // Bob has it but has not held it, so he does not qualify yet. This is
+        // what stops one position being rented to a different trader every
+        // transaction.
+        assertEq(staking.discountBpsFor(bob), 0, "a just-received position qualified immediately");
+
+        skip(1 hours);
+        assertEq(staking.discountBpsFor(bob), 1_000, "a held position should qualify");
     }
 
     function test_aDiscountOverTheCapIsRefused() public {
@@ -333,11 +360,11 @@ contract LeekStakingTest is Test {
 
     function test_aZeroAddressConstructorArgumentIsRefused() public {
         vm.expectRevert(LeekStaking.ZeroAmount.selector);
-        new LeekStaking(IERC20(address(0)), IERC20(address(musd)), admin);
+        new LeekStaking(IERC20(address(0)), IERC20(address(musd)), admin, COOLDOWN);
         vm.expectRevert(LeekStaking.ZeroAmount.selector);
-        new LeekStaking(IERC20(address(mezo)), IERC20(address(0)), admin);
+        new LeekStaking(IERC20(address(mezo)), IERC20(address(0)), admin, COOLDOWN);
         vm.expectRevert(LeekStaking.ZeroAmount.selector);
-        new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), address(0));
+        new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), address(0), COOLDOWN);
     }
 
     /* --------------------------------------------------------------- fuzz */
@@ -391,7 +418,7 @@ contract LeekStakingTest is Test {
 
     function testFuzz_stakeThenUnstakeReturnsTheWholeStake(uint256 amount) public {
         amount = bound(amount, 1, 1_000 * ONE);
-        _stake(alice, amount);
+        _stakeAndWait(alice, amount);
         vm.prank(alice);
         staking.unstake(amount);
         assertEq(mezo.balanceOf(alice), 1_000 * ONE);
@@ -412,5 +439,97 @@ contract LeekStakingTest is Test {
 
         // A transfer must not create or destroy a claim on revenue.
         assertEq(before, afterwards);
+    }
+
+    /* ------------------------------------------------------- the cooldown */
+
+    function test_unstakingBeforeTheCooldownIsRefused() public {
+        _stake(alice, 100 * ONE);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, COOLDOWN));
+        staking.unstake(100 * ONE);
+    }
+
+    function test_unstakingIsAllowedTheInstantTheCooldownElapses() public {
+        _stake(alice, 100 * ONE);
+        skip(COOLDOWN - 1);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, COOLDOWN - 1, COOLDOWN));
+        staking.unstake(100 * ONE);
+
+        skip(1);
+        vm.prank(alice);
+        staking.unstake(100 * ONE);
+        assertEq(staking.balanceOf(alice), 0);
+    }
+
+    function test_aTopUpRestartsTheClockOnTheWholePosition() public {
+        // Otherwise a long-standing staker could add size immediately before
+        // a distribution and withdraw it immediately after.
+        _stake(alice, 100 * ONE);
+        skip(COOLDOWN);
+        _stake(alice, 1 * ONE);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, COOLDOWN));
+        staking.unstake(100 * ONE);
+    }
+
+    function test_claimingDoesNotNeedTheCooldown() public {
+        // The cooldown is on the principal, not on earnings: a staker who
+        // leaves rewards unclaimed should not be pushed into unstaking to
+        // collect them.
+        _stake(alice, 100 * ONE);
+        _fund(10 * ONE);
+        vm.prank(alice);
+        uint256 paid = staking.claim();
+        assertEq(paid, 10 * ONE);
+    }
+
+    function test_theStakeAndRewardTokenCannotBeTheSame() public {
+        // Unrecoverable if missed: both fields are immutable, and with one
+        // token the permissionless notifyReward credits staked principal as
+        // revenue and the principal walks out as a claim.
+        vm.expectRevert(LeekStaking.SameToken.selector);
+        new LeekStaking(IERC20(address(musd)), IERC20(address(musd)), admin, COOLDOWN);
+    }
+
+    function test_aZeroCooldownIsRefused() public {
+        vm.expectRevert(LeekStaking.ZeroAmount.selector);
+        new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin, 0);
+    }
+
+    function test_theReceiptCannotBeParkedInTheStakingContract() public {
+        // It would accrue a share of all future revenue to an address that
+        // can never claim it, and lock the MEZO behind it.
+        _stakeAndWait(alice, 100 * ONE);
+        vm.prank(alice);
+        vm.expectRevert(LeekStaking.SelfTransfer.selector);
+        staking.transfer(address(staking), 100 * ONE);
+    }
+
+    function test_unstakeReturnsThePrincipalEvenIfTheRewardCannotBePaid() public {
+        // MUSD is upgradeable; if it ever refuses to pay an address, that
+        // must not trap the staker's MEZO, which this contract holds and
+        // which has nothing wrong with it.
+        _stake(alice, 100 * ONE);
+        _fund(10 * ONE);
+        skip(COOLDOWN);
+
+        // Drain the reward token so the payout cannot be made at all.
+        // The balance is read BEFORE the prank: an argument expression is
+        // evaluated after it and would consume it, leaving this transfer to
+        // run as the test contract. That has caught me three times in this
+        // repository now.
+        uint256 held = musd.balanceOf(address(staking));
+        vm.prank(address(staking));
+        musd.transfer(bob, held);
+
+        vm.prank(alice);
+        staking.unstake(100 * ONE);
+
+        assertEq(mezo.balanceOf(alice), 1_000 * ONE, "the principal did not come back");
+        // The claim survives for later rather than being silently zeroed.
+        assertEq(staking.pending(alice), 10 * ONE, "the unpaid reward was lost");
     }
 }

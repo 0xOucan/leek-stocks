@@ -17,6 +17,7 @@ import {MockMUSD} from "./mocks/MockMUSD.sol";
  * invariant that reads the same storage the code wrote proves nothing.
  */
 contract Handler is Test {
+    uint256 constant COOLDOWN = 1 hours;
     LeekStaking public staking;
     MockMUSD public mezo;
     MockMUSD public musd;
@@ -54,10 +55,26 @@ contract Handler is Test {
         totalStakedIn += amount;
     }
 
+    /**
+     * Let time pass.
+     *
+     * Without this the cooldown means `unstake` always reverts, so every
+     * sequence the fuzzer explores is deposits only - no exits, no claims
+     * after an exit - and the invariants would pass against a state space
+     * missing half the contract. A handler that silently cannot reach a
+     * function is worse than one that fails.
+     */
+    function passTime(uint256 seconds_) external {
+        vm.warp(block.timestamp + bound(seconds_, 1, 3 hours));
+    }
+
     function unstake(uint256 actorSeed, uint256 amount) external {
         address actor = _actor(actorSeed);
         uint256 held = staking.balanceOf(actor);
         if (held == 0) return;
+        // Return early rather than revert when the position is still cooling,
+        // so the fuzzer is not spending runs on a known-impossible action.
+        if (block.timestamp - staking.lastIncrease(actor) < staking.cooldown()) return;
         amount = bound(amount, 1, held);
         // unstake() pays out any earned MUSD as well as returning the stake,
         // so the revenue tally has to count it. Missing this made the
@@ -102,6 +119,8 @@ contract Handler is Test {
 }
 
 contract LeekStakingInvariants is Test {
+    uint256 constant COOLDOWN = 1 hours;
+
     LeekStaking staking;
     MockMUSD mezo;
     MockMUSD musd;
@@ -110,7 +129,7 @@ contract LeekStakingInvariants is Test {
     function setUp() public {
         mezo = new MockMUSD(18);
         musd = new MockMUSD(18);
-        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), address(this));
+        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), address(this), COOLDOWN);
         handler = new Handler(staking, mezo, musd);
         targetContract(address(handler));
     }

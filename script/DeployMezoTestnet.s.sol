@@ -113,6 +113,15 @@ contract DeployMezoTestnet is Script {
      * two contracts independently: part of every fee is the reserve top-up
      * that keeps redemption solvent, so no stake may waive all of it.
      */
+    /**
+     * @dev Seconds a stake must sit before it can be unstaked or earn a
+     *      discount. One hour on testnet: long enough that acquiring and
+     *      releasing a position inside one transaction is impossible, which
+     *      is the attack, and short enough that a tester can see both sides
+     *      of it in a sitting.
+     */
+    uint256 constant STAKING_COOLDOWN = 1 hours;
+
     uint256 constant TIER_1_STAKE = 100e18;
     uint16 constant TIER_1_DISCOUNT_BPS = 1_000; // 10% off the fee
     uint256 constant TIER_2_STAKE = 1_000e18;
@@ -319,7 +328,7 @@ contract DeployMezoTestnet is Script {
         address mezoToken = vm.envOr("MEZO_TOKEN", DEFAULT_MEZO);
         console2.log("MEZO token        ", mezoToken);
 
-        staking = new LeekStaking(IERC20(mezoToken), IERC20(settlementToken), admin);
+        staking = new LeekStaking(IERC20(mezoToken), IERC20(settlementToken), admin, STAKING_COOLDOWN);
 
         LeekStaking.Tier[] memory tiers = new LeekStaking.Tier[](3);
         tiers[0] = LeekStaking.Tier(TIER_1_STAKE, TIER_1_DISCOUNT_BPS);

@@ -37,6 +37,31 @@ import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/Safe
  *      claim, transfer - and `notifyReward` is permissionless. If every
  *      operator vanished, stakers could still stake, claim and leave.
  *
+ *      **Entitlement is gated by a holding period.** Without one, a position
+ *      held for a single instant earned what a position held for a month
+ *      earned, because `notifyReward` divides the arriving revenue by
+ *      `totalSupply()` as it stands in that one call. The measured result
+ *      (test/LeekStaking.flashstake.t.sol) was a one-block staker taking
+ *      2497.50 of a 2500 MUSD distribution from somebody who had been staked
+ *      the whole time, and the same trick returning an attacker their own
+ *      routed fee. The discount was rentable the same way, and worse, because
+ *      sMEZO is transferable: one whale position could grant the top tier to
+ *      any number of traders, one per transaction.
+ *
+ *      So `cooldown` seconds must pass after a balance increase before an
+ *      account can unstake or earn a discount. Be clear about what that buys:
+ *      it converts a free flash attack into a position with capital at risk
+ *      for the cooldown, which is the thing a revenue share is supposed to
+ *      pay for. It does not make entitlement proportional to time held - a
+ *      staker who waits out the cooldown still earns a full share of the next
+ *      distribution. Streaming the distribution over a period is the stronger
+ *      answer and is not what this does.
+ *
+ *      A balance *increase* restarts the clock, including one received by
+ *      transfer. Topping up would otherwise let a long-standing staker add
+ *      size immediately before a distribution, and a transferred receipt
+ *      would arrive already eligible, which is the rental.
+ *
  *      **Three deliberate simplifications**, each removing a class of bug:
  *
  *      1. **sMEZO is minted 1:1 with the MEZO received.** There is no exchange
@@ -63,7 +88,6 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     /// @notice May change the discount tiers, within `MAX_DISCOUNT_BPS`.
     bytes32 public constant TIER_ADMIN_ROLE = keccak256("TIER_ADMIN_ROLE");
 
-    uint256 private constant BPS = 10_000;
 
     /**
      * @notice The largest share of a fee a tier may waive. 50%.
@@ -110,10 +134,21 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     uint256 public rewardsOwed;
 
     /**
-     * @notice MUSD received that rounded to nothing per share, awaiting the
-     *         next distribution.
-     * @dev Dust, not a balance anyone owns. It is included in the next
-     *      `notifyReward`, so it is never stranded.
+     * @notice MUSD that rounded to nothing per share. Telemetry only.
+     *
+     * @dev **This is not redistributed, and an earlier version of this
+     *      comment said it was.** `notifyReward` adds the whole of `incoming`
+     *      to `rewardsOwed`, so the part that rounded away is accounted as a
+     *      liability and is therefore excluded from every later
+     *      `incoming = held - rewardsOwed`. It stays in the contract owed to
+     *      nobody in particular, which is exactly what covers the clamp in
+     *      `_payout`.
+     *
+     *      That is deliberate and the conservative direction: crediting it
+     *      twice is what made the sum of everyone's `pending` exceed the
+     *      revenue that had ever arrived. A reader who "fixes the stranded
+     *      dust" on the strength of the old comment reintroduces that bug,
+     *      which is why the comment is corrected rather than deleted.
      */
     uint256 public unallocated;
 
@@ -125,6 +160,17 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
 
     /// @notice Lifetime MUSD distributed to stakers. For an honest rate.
     uint256 public totalDistributed;
+
+    /// @notice Seconds after a balance increase before unstaking or a discount.
+    uint256 public immutable cooldown;
+
+    /**
+     * @notice When each account's balance last increased.
+     * @dev Written in `_update` for the receiving side of every mint and
+     *      transfer, so there is one definition of "when this position
+     *      started" and it cannot be bypassed by routing through a transfer.
+     */
+    mapping(address => uint256) public lastIncrease;
 
     /**
      * @notice A fee discount earned by staking at least `minStake`.
@@ -150,6 +196,9 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     error DiscountTooHigh(uint16 discountBps);
     error TiersNotAscending(uint256 index);
     error NothingToDistribute();
+    error StillCooling(uint256 elapsed, uint256 required);
+    error SameToken();
+    error SelfTransfer();
 
     /**
      * @param mezo_ the staked token.
@@ -157,12 +206,27 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
      *        their fees in or stakers earn something no vault produces.
      * @param admin the holder of `DEFAULT_ADMIN_ROLE` and `TIER_ADMIN_ROLE`.
      */
-    constructor(IERC20 mezo_, IERC20 musd_, address admin) ERC20("Staked MEZO", "sMEZO") {
+    constructor(IERC20 mezo_, IERC20 musd_, address admin, uint256 cooldown_) ERC20("Staked MEZO", "sMEZO") {
         if (address(mezo_) == address(0) || address(musd_) == address(0) || admin == address(0)) {
             revert ZeroAmount();
         }
+        /*
+         * The stake and the reward must be different tokens.
+         *
+         * If they are the same, staked principal is indistinguishable from
+         * arriving revenue: stake 1000, call the permissionless
+         * `notifyReward`, and `incoming = balanceOf(this) - rewardsOwed` is
+         * your own 1000, credited as a reward and claimable. The contract
+         * then holds nothing against its sMEZO supply and nobody can
+         * unstake. Both fields are immutable, so this check is the only
+         * chance to catch it.
+         */
+        if (mezo_ == musd_) revert SameToken();
+        if (cooldown_ == 0) revert ZeroAmount();
+
         mezo = mezo_;
         musd = musd_;
+        cooldown = cooldown_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(TIER_ADMIN_ROLE, admin);
     }
@@ -200,8 +264,23 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
     function unstake(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
 
+        uint256 elapsed = block.timestamp - lastIncrease[msg.sender];
+        if (elapsed < cooldown) revert StillCooling(elapsed, cooldown);
+
         _burn(msg.sender, amount);
-        _payout(msg.sender);
+        /*
+         * The reward leg must not be able to hold the principal hostage.
+         *
+         * `_payout` makes an external MUSD transfer, and MUSD on Mezo is an
+         * upgradeable contract. If it gains a blocklist, a frozen account or
+         * a reverting hook, an unconditional payout here means a staker whose
+         * address MUSD will not pay cannot retrieve their *MEZO* either -
+         * which this contract holds, and which has nothing wrong with it. So
+         * a failed payout leaves `claimable` intact for a later `claim` (or
+         * for a different address, after transferring the receipt) and the
+         * principal still goes back.
+         */
+        _tryPayout(msg.sender);
         mezo.safeTransfer(msg.sender, amount);
         emit Unstaked(msg.sender, amount);
     }
@@ -283,6 +362,12 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
      *      locked door.
      */
     function discountBpsFor(address account) external view returns (uint16) {
+        /* A position that could be acquired and released inside one
+           transaction was a discount for rent, not a discount for holding.
+           The receipt being transferable made it worse: the same stake could
+           grant the top tier to any number of traders, one per transaction. */
+        if (block.timestamp - lastIncrease[account] < cooldown) return 0;
+
         uint256 staked = balanceOf(account);
         uint16 discount = 0;
         uint256 length = tiers.length;
@@ -357,6 +442,38 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
      *      next distribution arrives. Nobody loses a reward, and the worst
      *      case is a few wei of MUSD arriving one distribution late.
      */
+    /**
+     * @dev `_payout`, but a failing MUSD transfer is not fatal.
+     *
+     *      Used by `unstake` only. `claim` keeps the strict version, because
+     *      a claim that silently does nothing is worse than one that reverts
+     *      and says why.
+     */
+    function _tryPayout(address account) private {
+        uint256 owed = claimable[account];
+        if (owed == 0) return;
+
+        uint256 available = musd.balanceOf(address(this));
+        uint256 payable_ = owed > available ? available : owed;
+        if (payable_ == 0) return;
+
+        // State first, so a reverting token cannot leave this half-applied;
+        // the whole call reverts and nothing above is kept.
+        claimable[account] = owed - payable_;
+        rewardsOwed = rewardsOwed > payable_ ? rewardsOwed - payable_ : 0;
+
+        (bool ok,) = address(musd).call(
+            abi.encodeWithSelector(IERC20.transfer.selector, account, payable_)
+        );
+        if (ok) {
+            emit Claimed(account, payable_);
+        } else {
+            // Put it back. The staker keeps the claim and gets their MEZO.
+            claimable[account] = owed;
+            rewardsOwed += payable_;
+        }
+    }
+
     function _payout(address account) private returns (uint256 paid) {
         uint256 owed = claimable[account];
         if (owed == 0) return 0;
@@ -385,11 +502,32 @@ contract LeekStaking is ERC20, AccessControl, ReentrancyGuard {
      *      `_settle` ignores the zero address rather than accruing to it.
      */
     function _update(address from, address to, uint256 value) internal override {
+        /*
+         * sMEZO must not come to rest here.
+         *
+         * A transfer to this contract is an ordinary transfer as far as
+         * OpenZeppelin is concerned: `totalSupply()` does not change, so every
+         * later distribution keeps dividing by it, and `_settle` dutifully
+         * accrues a share into `claimable[address(this)]` forever. Nothing can
+         * ever pay that - `claim` and `unstake` both key off `msg.sender` and
+         * there is no sweep - so the MEZO behind it is locked and a fixed
+         * fraction of all future revenue accrues to an address that cannot
+         * spend it. The most likely cause is somebody pasting a contract
+         * address, so it is refused rather than documented.
+         */
+        if (to == address(this)) revert SelfTransfer();
+
         _settle(from);
         _settle(to);
         super._update(from, to, value);
         // Re-base after the move: `_settle` used the old balances.
         if (from != address(0)) rewardDebt[from] = (balanceOf(from) * accMusdPerShare) / ACC_PRECISION;
-        if (to != address(0)) rewardDebt[to] = (balanceOf(to) * accMusdPerShare) / ACC_PRECISION;
+        if (to != address(0)) {
+            rewardDebt[to] = (balanceOf(to) * accMusdPerShare) / ACC_PRECISION;
+            /* Any increase restarts the clock, mint or transfer alike. A
+               top-up immediately before a distribution would otherwise be
+               free, and a received receipt would arrive already eligible. */
+            lastIncrease[to] = block.timestamp;
+        }
     }
 }

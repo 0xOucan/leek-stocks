@@ -12,7 +12,7 @@ import {ILeekStaking} from "../src/interfaces/ILeekStaking.sol";
 import {MockMUSD} from "./mocks/MockMUSD.sol";
 
 /**
- * Proof that entitlement is weighted by balance and not by time.
+ * The flash-stake attacks, now refused.
  *
  * `notifyReward` divides the arriving revenue by `totalSupply()` as it stands
  * in that one call, and nothing imposes a lock, a cooldown or a minimum
@@ -20,9 +20,18 @@ import {MockMUSD} from "./mocks/MockMUSD.sol";
  * for a month earns, and both of the attacks below follow from that single
  * fact rather than from any arithmetic slip.
  *
- * These tests assert the CURRENT behaviour, so they pass while the flaw is
- * present. They are written as the demonstration, not as the regression bar -
- * the fix inverts them, and that inversion is the point.
+ * Each of these was demonstrated against the previous code - a one-block
+ * staker took 2497.50 of a 2500 MUSD distribution, and the self-serving
+ * variant returned the attacker 1248.75 MUSD of their own fee. The numbers
+ * are in the commit that added this file. They now assert the refusal, so
+ * they fail again if the cooldown is removed.
+ *
+ * What the cooldown does NOT do, stated here because the tests below would
+ * otherwise imply it: entitlement is still not proportional to time held. A
+ * staker who waits out the cooldown earns a full share of the next
+ * distribution. The cooldown converts a free attack into a position with
+ * capital at risk for its duration; streaming a distribution over a period
+ * is the stronger answer and is not what this is.
  */
 contract FlashStaker {
     LeekStaking immutable staking;
@@ -83,6 +92,8 @@ contract FlashStakeTest is Test {
 
     uint256 constant ONE = 1e18;
 
+    /// The oracle-independent holding period the staking contract enforces.
+    uint256 constant COOLDOWN = 1 hours;
     function setUp() public {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(18);
@@ -98,7 +109,7 @@ contract FlashStakeTest is Test {
         share = ETFShare(s);
         vault = IssuanceVault(v);
 
-        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin);
+        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin, COOLDOWN);
         vm.prank(admin);
         vault.setStaking(ILeekStaking(address(staking)));
 
@@ -114,7 +125,7 @@ contract FlashStakeTest is Test {
         musd.approve(address(vault), type(uint256).max);
     }
 
-    function test_aFlashStakerStealsAlmostAllOfSomebodyElsesDistribution() public {
+    function test_theOneBlockStakerCannotLeaveWithTheDistribution() public {
         FlashStaker attacker = new FlashStaker(staking, vault, IERC20(address(mezo)), IERC20(address(musd)));
         // 1000x the honest stake. No flash loan is modelled because none is
         // needed: any capital that exists for one block is enough.
@@ -130,20 +141,22 @@ contract FlashStakeTest is Test {
         uint256 routed = staking.totalDistributed();
         assertGt(routed, 0, "no revenue was routed, the test proves nothing");
 
-        // 3. Attacker leaves in the next transaction, taking the revenue.
-        uint256 stolen = attacker.exit(100_000_000 * ONE);
-        uint256 honestShare = staking.pending(honest);
+        // 3. The exit is refused: the position is still cooling.
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, 1 hours));
+        attacker.exit(100_000_000 * ONE);
 
+        // The capital is committed for the cooldown, which is the point. The
+        // attacker can still leave afterwards and will still hold the credited
+        // share - this makes the attack cost capital and time, it does not
+        // make it impossible.
+        skip(1 hours);
+        uint256 taken = attacker.exit(100_000_000 * ONE);
         emit log_named_decimal_uint("revenue routed by Alice's trade", routed, 18);
-        emit log_named_decimal_uint("taken by the one-block staker  ", stolen, 18);
-        emit log_named_decimal_uint("left for the long-term staker  ", honestShare, 18);
-
-        // The attacker held 99.9% of supply for one block and took 99.9%.
-        assertGt(stolen * 1000, routed * 998, "the flash staker did not capture the distribution");
-        assertLt(honestShare * 100, routed, "the honest staker kept more than 1%");
+        emit log_named_decimal_uint("taken after waiting the cooldown", taken, 18);
+        assertGt(taken, 0, "the position earned nothing at all, which is not the intent");
     }
 
-    function test_aFlashStakerGetsTheirOwnFeeBackAndTheTopDiscount() public {
+    function test_theSameTransactionStakeTradeUnstakeIsImpossible() public {
         LeekStaking.Tier[] memory tiers = new LeekStaking.Tier[](1);
         tiers[0] = LeekStaking.Tier(1_000 * ONE, 5_000); // the cap, 50% off
         vm.prank(admin);
@@ -156,16 +169,15 @@ contract FlashStakeTest is Test {
         // Full fee for a wallet that holds nothing.
         assertEq(vault.effectiveFeeBps(alice), 50);
 
-        uint256 clawedBack = attacker.tradeAtOwnExpense(100_000_000 * ONE, 1_000_000e18);
-
-        // The fee at the discounted rate is 25 bps of 1e24 = 2500e18, half of
-        // which routes to stakers; the attacker held almost all the supply, so
-        // almost all of that comes back.
-        emit log_named_decimal_uint("fee returned to the attacker", clawedBack, 18);
-        assertGt(clawedBack, 1_200e18, "the attacker did not recover their own routed fee");
+        // The whole sequence in one transaction - stake, buy, unstake - now
+        // reverts on the unstake, so the fee cannot be recovered within the
+        // transaction that paid it. And the buy inside it pays the FULL fee,
+        // because the discount is gated on the same cooldown.
+        vm.expectRevert(abi.encodeWithSelector(LeekStaking.StillCooling.selector, 0, 1 hours));
+        attacker.tradeAtOwnExpense(100_000_000 * ONE, 1_000_000e18);
     }
 
-    function test_theDiscountIsReadFromASpotBalanceSoItCanBeRented() public {
+    function test_aJustReceivedPositionGrantsNoDiscount() public {
         LeekStaking.Tier[] memory tiers = new LeekStaking.Tier[](1);
         tiers[0] = LeekStaking.Tier(1_000 * ONE, 5_000);
         vm.prank(admin);
@@ -183,6 +195,16 @@ contract FlashStakeTest is Test {
         staking.transfer(renter, 1_000 * ONE);
         vm.stopPrank();
 
-        assertEq(vault.effectiveFeeBps(renter), 25, "the rented position did not grant the discount");
+        // The receipt arrived this instant, so the clock restarted on arrival
+        // and the renter pays full fee. This is what stops one whale position
+        // granting the top tier to a different trader every transaction.
+        assertEq(vault.effectiveFeeBps(renter), 50, "a just-received position still granted a discount");
+
+        // And the lender lost the discount by sending it away, as they should.
+        assertEq(vault.effectiveFeeBps(honest), 50);
+
+        // After the cooldown the renter genuinely holds it and does qualify.
+        skip(1 hours);
+        assertEq(vault.effectiveFeeBps(renter), 25, "a held position should qualify");
     }
 }

@@ -41,6 +41,8 @@ contract IssuanceVaultStakingTest is Test {
     int256 constant PRICE = 200e8;
     uint256 constant ONE = 1e18;
 
+    /// The oracle-independent holding period the staking contract enforces.
+    uint256 constant COOLDOWN = 1 hours;
     function setUp() public {
         vm.warp(1_700_000_000);
         musd = new MockMUSD(18);
@@ -56,7 +58,7 @@ contract IssuanceVaultStakingTest is Test {
         share = ETFShare(shareAddress);
         vault = IssuanceVault(vaultAddress);
 
-        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin);
+        staking = new LeekStaking(IERC20(address(mezo)), IERC20(address(musd)), admin, COOLDOWN);
 
         LeekStaking.Tier[] memory tiers = new LeekStaking.Tier[](2);
         tiers[0] = LeekStaking.Tier(100 * ONE, 2_000); // 20% off
@@ -82,6 +84,19 @@ contract IssuanceVaultStakingTest is Test {
         staking.stake(amount);
     }
 
+    /**
+     * Stake and wait out the holding period.
+     *
+     * The discount and the revenue share are both gated on it, so a test
+     * about either has to get past it first. The gate itself is tested in
+     * test/LeekStaking.flashstake.t.sol, where it is the subject rather than
+     * an obstacle.
+     */
+    function _stakeAndWait(address who, uint256 amount) internal {
+        _stake(who, amount);
+        skip(1 hours);
+    }
+
     /* ---------------------------------------------------------- discounts */
 
     function test_withoutStakingTheFeeIsUnchanged() public {
@@ -99,14 +114,14 @@ contract IssuanceVaultStakingTest is Test {
     }
 
     function test_aStakerPaysLess() public {
-        _stake(alice, 100 * ONE);
+        _stakeAndWait(alice, 100 * ONE);
         assertEq(vault.effectiveFeeBps(alice), 40); // 20% off 50
-        _stake(alice, 900 * ONE);
+        _stakeAndWait(alice, 900 * ONE);
         assertEq(vault.effectiveFeeBps(alice), 25); // 50% off 50
     }
 
     function test_theDiscountReachesOnlyTheTraderWhoEarnedIt() public {
-        _stake(alice, 1_000 * ONE);
+        _stakeAndWait(alice, 1_000 * ONE);
         assertEq(vault.effectiveFeeBps(alice), 25);
         assertEq(vault.effectiveFeeBps(bob), FEE_BPS);
 
@@ -129,7 +144,7 @@ contract IssuanceVaultStakingTest is Test {
 
     function test_aDiscountNeverEatsTheReserveTopUp() public {
         uint256 reservesBefore = vault.reserves();
-        _stake(alice, 1_000 * ONE); // the deepest discount
+        _stakeAndWait(alice, 1_000 * ONE); // the deepest discount
         vm.prank(alice);
         vault.buy(1_000e18, 0);
         // Half of the (discounted) fee still reaches reserves: 1000 * 25bps
@@ -140,7 +155,7 @@ contract IssuanceVaultStakingTest is Test {
     /* ------------------------------------------------------------ routing */
 
     function test_revenueReachesStakersInsteadOfTheTreasury() public {
-        _stake(bob, 100 * ONE);
+        _stakeAndWait(bob, 100 * ONE);
 
         vm.prank(alice);
         vault.buy(1_000e18, 0);
@@ -163,7 +178,7 @@ contract IssuanceVaultStakingTest is Test {
     function test_redeemRoutesRevenueToo() public {
         vm.prank(alice);
         uint256 shares = vault.buy(10_000e18, 0);
-        _stake(bob, 100 * ONE);
+        _stakeAndWait(bob, 100 * ONE);
 
         vm.startPrank(alice);
         share.approve(address(vault), shares);
@@ -174,7 +189,7 @@ contract IssuanceVaultStakingTest is Test {
     }
 
     function test_routingSurvivesTheStakersAllLeaving() public {
-        _stake(bob, 100 * ONE);
+        _stakeAndWait(bob, 100 * ONE);
         vm.prank(alice);
         vault.buy(1_000e18, 0);
 
