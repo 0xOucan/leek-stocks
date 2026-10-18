@@ -8,6 +8,13 @@ import {IERC20Metadata} from "openzeppelin-contracts/contracts/token/ERC20/exten
 import {IndexOracle} from "../src/IndexOracle.sol";
 import {ETFFactory} from "../src/ETFFactory.sol";
 import {IssuanceVault} from "../src/IssuanceVault.sol";
+import {LeekStaking} from "../src/LeekStaking.sol";
+import {ILeekStaking} from "../src/interfaces/ILeekStaking.sol";
+
+/// @dev Just enough of MUSD to tell the real one from the impostors.
+interface IMusdMintList {
+    function mintList(address) external view returns (bool);
+}
 
 /**
  * @title DeployMezoTestnet
@@ -39,10 +46,29 @@ contract DeployMezoTestnet is Script {
     /// @dev Mezo testnet. Guards against broadcasting at the wrong RPC alias.
     uint256 constant MEZO_TESTNET_CHAIN_ID = 31611;
 
-    /// @dev The real MUSD on Mezo testnet, 18 decimals, verified source.
-    ///      Overridable with SETTLEMENT_TOKEN only so a fork or a local chain
-    ///      can run the same script.
-    address constant DEFAULT_SETTLEMENT_TOKEN = 0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503;
+    /**
+     * @dev The MUSD `BorrowerOperations` can mint, which is the only one a
+     *      user can obtain by borrowing.
+     *
+     *      This constant used to be 0x118917a4..., the address Mezo's public
+     *      docs give for testnet MUSD and the one its own MUSD/BTC pool
+     *      holds. That contract returns **false** for
+     *      `mintList(BorrowerOperations)`. A deployment using it settles in a
+     *      token nobody can borrow and nobody can repay a trove with: the
+     *      symbol, the decimals and the balance all look correct and every
+     *      trade reverts. The live deployment escaped it only because
+     *      SETTLEMENT_TOKEN was passed by hand, which is not a safeguard.
+     *
+     *      Overridable with SETTLEMENT_TOKEN so a fork or a local chain can
+     *      run the same script, and asserted in `run()` on Mezo testnet.
+     */
+    address constant DEFAULT_SETTLEMENT_TOKEN = 0xf9BBcCC0F1b68EA07c86de6F88C76b3d8E2dD0af;
+
+    /// @dev Mezo's native borrow entry point, the authority on which MUSD is real.
+    address constant BORROWER_OPERATIONS = 0xa14cbA6DD12D537A8decc7dd3c4aC413B8711eba;
+
+    /// @dev MEZO on Mezo, the same precompile-range address on both networks.
+    address constant DEFAULT_MEZO = 0x7B7c000000000000000000000000000000000001;
 
     /// @dev Finding L-5: MUSD is upgradeable and the vault caches `decimals()`
     ///      at construction, so the live value is asserted here, before
@@ -64,21 +90,58 @@ contract DeployMezoTestnet is Script {
     uint16 constant RESERVE_SHARE_BPS = 5000;
     uint256 constant MAX_SHARES = 1_000_000e18; // finding H-1's only bound on exposure
 
+    /* -------------------------------------------------------- staking tiers */
+
+    /*
+     * Stake MEZO, pay less fee, and earn the rest of the fee others pay.
+     *
+     * The first tier is deliberately within reach of one faucet claim, so a
+     * tester can see the discount without acquiring MEZO some other way. The
+     * top tier is LeekStaking's own MAX_DISCOUNT_BPS and is capped there in
+     * two contracts independently: part of every fee is the reserve top-up
+     * that keeps redemption solvent, so no stake may waive all of it.
+     */
+    uint256 constant TIER_1_STAKE = 100e18;
+    uint16 constant TIER_1_DISCOUNT_BPS = 1_000; // 10% off the fee
+    uint256 constant TIER_2_STAKE = 1_000e18;
+    uint16 constant TIER_2_DISCOUNT_BPS = 2_500;
+    uint256 constant TIER_3_STAKE = 5_000e18;
+    uint16 constant TIER_3_DISCOUNT_BPS = 5_000; // the cap
+
     /* ------------------------------------------------------------- the indices */
 
     string constant GOLOGGLE_SYMBOL = "GOLOGGLE";
     string constant GOLOGGLE_NAME = "Gologgle Index";
     string constant GOLOGGLE_FEED = "GOLOGGLE / MUSD";
-    /// @dev Finding L-1: the first round is exempt from the deviation bound,
-    ///      so it is the one answer a publisher sets freely. It is a constant
-    ///      here, published in this same reviewed step, and it should be read
-    ///      off the explorer before anything consumes the feed.
-    int256 constant GOLOGGLE_FIRST_ANSWER = 200e8; // 200 MUSD per share
+    /**
+     * @dev The opening price, which must be the index's own base value.
+     *
+     *      Finding L-1: the first round is exempt from the deviation bound,
+     *      so it is the one answer a publisher sets freely. Every round after
+     *      it is capped at MAX_DEVIATION_BPS, which makes a wrong opening
+     *      price expensive rather than harmless.
+     *
+     *      This was 200e8 while both indices are based at 100, and the live
+     *      feed had to walk down to the truth at 20% a round:
+     *
+     *          round 1  200.00   <- this constant
+     *          round 2  160.00
+     *          round 3  128.00
+     *          round 4  102.40
+     *          round 5   99.71   <- the index's actual value
+     *
+     *      For four rounds the vault priced a share at up to twice what the
+     *      basket was worth, and anybody buying in that window overpaid by
+     *      that factor. Both indices use baseValue 100 in
+     *      feed/src/indices.ts, so the opening answer is 100.
+     */
+    int256 constant GOLOGGLE_FIRST_ANSWER = 100e8; // the index's base value
 
     string constant AMEZON_SYMBOL = "AMEZON";
     string constant AMEZON_NAME = "Amezon Index";
     string constant AMEZON_FEED = "AMEZON / MUSD";
-    int256 constant AMEZON_FIRST_ANSWER = 180e8;
+    /// @dev Same reasoning as GOLOGGLE_FIRST_ANSWER. Was 180e8.
+    int256 constant AMEZON_FIRST_ANSWER = 100e8;
 
     /* ------------------------------------------------------------ role holders */
 
@@ -129,6 +192,23 @@ contract DeployMezoTestnet is Script {
             IERC20Metadata(settlementToken).decimals() == EXPECTED_MUSD_DECIMALS,
             "settlement token decimals are not 18: the vault would misprice by a power of ten"
         );
+        /*
+         * And the token has to be the MUSD a user can actually get.
+         *
+         * Five contracts on Mezo testnet report MUSD with 18 decimals, so the
+         * decimals check above passes for all of them and tells us nothing
+         * about which one this is. Only one returns true for
+         * mintList(BorrowerOperations), and settling in any of the others
+         * deploys a market whose users cannot obtain the settlement token.
+         * Checked only on Mezo testnet, since a local chain's mock has no
+         * mintList at all.
+         */
+        if (block.chainid == MEZO_TESTNET_CHAIN_ID) {
+            require(
+                IMusdMintList(settlementToken).mintList(BORROWER_OPERATIONS),
+                "settlement token is not mintable by BorrowerOperations: nobody could borrow it"
+            );
+        }
 
         if (admin == deployer && publisher == deployer && guardian == deployer && treasurer == deployer) {
             console2.log("WARNING: one key holds admin, publisher, guardian and treasurer. Testnet only.");
@@ -157,9 +237,28 @@ contract DeployMezoTestnet is Script {
         (address gologgleShare, address gologgleVault) = factory.deployETF(GOLOGGLE_NAME, GOLOGGLE_SYMBOL);
         (address amezonShare, address amezonVault) = factory.deployETF(AMEZON_NAME, AMEZON_SYMBOL);
 
+        /*
+         * Staking, deployed after the vaults because it earns from them.
+         *
+         * The reverse order is impossible: the vaults are deployed by the
+         * factory and take no staking address, so the link is made with
+         * setStaking. Until that call lands each vault behaves exactly as
+         * before, accruing the treasury share of every fee to feesAccrued -
+         * which is also the state the vaults fall back to if nobody is
+         * staked.
+         *
+         * Split into its own function because `run()` ran out of stack: the
+         * locals here are each a deployed address that has to be logged, and
+         * "stack too deep" is not a reason to log fewer of them.
+         */
+        LeekStaking staking = _deployStakingAndWire(settlementToken, gologgleVault, amezonVault);
+
         vm.stopBroadcast();
 
+        _verifyWiring(staking, gologgleVault, amezonVault, deployer);
+
         console2.log("settlement token  ", settlementToken);
+        console2.log("staking (sMEZO)   ", address(staking));
         console2.log("factory           ", address(factory));
         console2.log("GOLOGGLE oracle   ", address(gologgleOracle));
         console2.log("GOLOGGLE share    ", gologgleShare);
@@ -195,5 +294,53 @@ contract DeployMezoTestnet is Script {
         if (guardian != deployer) oracle.renounceRole(oracle.GUARDIAN_ROLE(), deployer);
         // Last, since renouncing admin first would strip the ability to grant.
         if (admin != deployer) oracle.renounceRole(oracle.DEFAULT_ADMIN_ROLE(), deployer);
+    }
+
+    /**
+     * @dev Deploy the staking contract, set its tiers and point both vaults
+     *      at it. Broadcast must already be open.
+     */
+    function _deployStakingAndWire(address settlementToken, address gologgleVault, address amezonVault)
+        internal
+        returns (LeekStaking staking)
+    {
+        address mezoToken = vm.envOr("MEZO_TOKEN", DEFAULT_MEZO);
+        console2.log("MEZO token        ", mezoToken);
+
+        staking = new LeekStaking(IERC20(mezoToken), IERC20(settlementToken), admin);
+
+        LeekStaking.Tier[] memory tiers = new LeekStaking.Tier[](3);
+        tiers[0] = LeekStaking.Tier(TIER_1_STAKE, TIER_1_DISCOUNT_BPS);
+        tiers[1] = LeekStaking.Tier(TIER_2_STAKE, TIER_2_DISCOUNT_BPS);
+        tiers[2] = LeekStaking.Tier(TIER_3_STAKE, TIER_3_DISCOUNT_BPS);
+        staking.setTiers(tiers);
+
+        IssuanceVault(gologgleVault).setStaking(ILeekStaking(address(staking)));
+        IssuanceVault(amezonVault).setStaking(ILeekStaking(address(staking)));
+    }
+
+    /**
+     * @dev Read the deployment back off the chain.
+     *
+     *      A script that logs what it intended rather than what landed is how
+     *      a half-wired system ships looking complete. Each of these is a
+     *      call the broadcast made; a mismatch aborts rather than printing a
+     *      summary nobody will re-check.
+     */
+    function _verifyWiring(LeekStaking staking, address gologgleVault, address amezonVault, address deployer)
+        internal
+        view
+    {
+        require(address(IssuanceVault(gologgleVault).staking()) == address(staking), "GOLOGGLE vault not wired");
+        require(address(IssuanceVault(amezonVault).staking()) == address(staking), "AMEZON vault not wired");
+        require(staking.tierCount() == 3, "tiers not set");
+        // A non-staker must pay the base fee: the discount is an incentive,
+        // never a gate, and a tier that fired for an empty balance would mean
+        // everyone trades at a discount and reserves are never topped up.
+        require(
+            IssuanceVault(gologgleVault).effectiveFeeBps(deployer) == FEE_BPS,
+            "a non-staker should pay the full fee"
+        );
+        require(staking.totalSupply() == 0, "staking should start empty");
     }
 }
