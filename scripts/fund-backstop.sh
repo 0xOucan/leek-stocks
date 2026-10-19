@@ -92,9 +92,31 @@ for _ in $(seq 1 60); do
 done
 [[ -n "${A:-}" && "$A" -ge "$WEI" ]] || fail "the allowance has not appeared. Check $H1."
 
+# Simulate, then send with an explicit gas limit.
+#
+# The allowance poll above is not enough, and this failed in practice after
+# that poll had already passed. On Mezo `eth_call` sees a freshly landed
+# approve before `eth_estimateGas` does, so the estimate reverts on a
+# transaction that is perfectly valid -- and `cast send` estimates before it
+# signs. The simulation below is the authoritative check; once it returns,
+# estimating again adds nothing but a race to lose.
+#
+# 300000 is a deliberate ceiling, not a measurement: `fund` is one
+# transferFrom, one storage write and one event, which does not plausibly
+# reach it. The trade is real and worth naming -- a fixed limit that is too
+# LOW burns the gas and fails, where an estimate would simply have been
+# right -- so it is set high rather than tight. Gas here costs ~1e-8 BTC and
+# the unused portion is refunded, so the headroom is free and the race is
+# not.
+echo "simulating fund..."
+if ! SIM=$(cast call "$VAULT" "fund(uint256)" "$WEI" --from "$ME" --rpc-url "$RPC" 2>&1); then
+  fail "fund would revert, so it was not sent: ${SIM%%$'\n'*}"
+fi
+echo "  simulates clean"
+
 echo "funding..."
 H2=$(cast send "$VAULT" "fund(uint256)" "$WEI" --rpc-url "$RPC" \
-  --account "$ACCOUNT" --password-file "$PASSFILE" --async)
+  --account "$ACCOUNT" --password-file "$PASSFILE" --gas-limit 300000 --async)
 echo "  $H2"
 for _ in $(seq 1 60); do
   NEW=$(cast call "$VAULT" "coverageBps()(uint256)" --rpc-url "$RPC" 2>/dev/null | awk '{print $1}')
