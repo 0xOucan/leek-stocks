@@ -184,4 +184,7 @@ expect_state "no allowance left standing" "0" "$LEFT"
 rule
 say "Done. You now hold $(cast from-wei "$SHARES_AFTER") $SYMBOL."
 say "Next:"
-say "  ./scripts/create-pool.sh $SYMBOL --shares 1"
+# The amount actually bought, not a hardcoded 1. The old hint told anyone who
+# followed it literally to pair ONE share after buying three, which sets the
+# pool's price off a third of the intended depth.
+say "  ./scripts/create-pool.sh $SYMBOL --shares $WANT_SHARES"

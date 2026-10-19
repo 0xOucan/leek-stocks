@@ -191,10 +191,27 @@ DEADLINE=$(python3 -c "import time; print(int(time.time()) + 1200)")
 # shellcheck source=scripts/lib/send.sh
 source "$(dirname "$0")/lib/send.sh"
 
-send_and_confirm "approve $SYMBOL to the router" \
-  "$SHARE" "approve(address,uint256)" "$ROUTER" "$SHARE_WEI"
-send_and_confirm "approve MUSD to the router" \
-  "$MUSD" "approve(address,uint256)" "$ROUTER" "$MUSD_WEI"
+# Skip an approval that already covers the deposit.
+#
+# This script was run four times over one flaky connection. Each run re-sent
+# both approvals unconditionally, and twice the run died on a redundant one
+# before ever reaching addLiquidity -- the allowance from the first attempt was
+# still standing the whole time. A transaction that cannot change state is a
+# transaction that can only fail, and on a bad link that is the whole cost.
+approve_if_short() {
+  local what=$1 token=$2 want=$3 have
+  have=$(cast call "$token" "allowance(address,address)(uint256)" "$ME" "$ROUTER" \
+    --rpc-url "$RPC" | awk '{print $1}')
+  if [[ $(python3 -c "print(1 if $have >= $want else 0)") == 1 ]]; then
+    say "> approve $what: already $(cast from-wei "$have"), which covers it - skipped"
+    return
+  fi
+  send_and_confirm "approve $what to the router" \
+    "$token" "approve(address,uint256)" "$ROUTER" "$want"
+}
+
+approve_if_short "$SYMBOL" "$SHARE" "$SHARE_WEI"
+approve_if_short "MUSD" "$MUSD" "$MUSD_WEI"
 
 # Minimums at 99% of the quote: the pool is new or nearly so, and a slippage
 # bound of zero is how a first deposit gets sandwiched on a chain where
