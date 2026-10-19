@@ -40,7 +40,7 @@ produced the staking revenue are **team-generated**, made to exercise the path.
 | Price feed | **deployed**; both oracles publishing, `lastError` null, a round every 30s when the price moves 50 bps |
 | Front end | **deployed**; a full buy -> redeem round trip completed on chain; onboarding, the faucet link, native borrowing and the MEZO staking panel are in the page |
 | Leeknding (lending) | written, 95 tests, 8 invariants, **not deployed** — `leek-lend` |
-| Air-gapped signing | the wallet draws Mezo transactions in BTC, and `buy`, `redeem`, `stake` and `unstake` field by field from its own decoder; **no byte has been flashed to a board yet**, so no screen has drawn one |
+| Air-gapped signing | the wallet draws Mezo transactions in BTC, and `buy`, `redeem`, `stake`, `unstake` plus Mezo's four borrow calls field by field from its own decoder. **Flashed to a board on 2026-10-18** and the digest verified on chip; a `buy` confirmed on the screen is still owed |
 
 > **Trying this?** [WALKTHROUGH.md](WALKTHROUGH.md) is the step-by-step, plus
 > the things that are awkward on this chain rather than broken — late
