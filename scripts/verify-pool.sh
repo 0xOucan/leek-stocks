@@ -36,6 +36,9 @@ TARGETS=("${1:-GOLOGGLE}" "${2:-}")
 [[ -z "${1:-}" ]] && TARGETS=(GOLOGGLE AMEZON)
 
 FAILED=0
+# A check that could not be RUN is its own outcome: neither a pass nor a
+# failure of the thing being checked.
+UNCHECKED=0
 for SYMBOL in "${TARGETS[@]}"; do
   [[ -n "$SYMBOL" ]] || continue
   SHARE=${SHARES[$SYMBOL]:-}
@@ -87,10 +90,38 @@ for SYMBOL in "${TARGETS[@]}"; do
     continue
   fi
 
-  ORACLE=$(cast call "$VAULT" "price()(uint256)" --rpc-url "$RPC" 2>/dev/null | awk '{print $1}' || echo "")
+  # A price this script could not FETCH is not a price the vault cannot
+  # READ, and the two want opposite responses: retry the first, investigate
+  # the second. `2>/dev/null ... || echo ""` collapsed them, so one dropped
+  # connection on a flaky link printed "oracle unreadable" about an oracle
+  # that was answering normally and failed a pool that was priced to 0 bps.
+  # The website made the same mistake about the same figure; see
+  # renderSolvencyPanel in web/src/app.ts.
+  ORACLE=""
+  ORACLE_ERR=""
+  for attempt in 1 2 3; do
+    if ORACLE_ERR=$(cast call "$VAULT" "price()(uint256)" --rpc-url "$RPC" 2>&1); then
+      ORACLE=$(awk '{print $1}' <<<"$ORACLE_ERR")
+      break
+    fi
+    [[ $attempt -lt 3 ]] && sleep 2
+  done
+
   if [[ -z "$ORACLE" || ! "$ORACLE" =~ ^[0-9]+$ ]]; then
-    echo "  oracle          unreadable, so the pool price cannot be checked"
-    FAILED=1
+    # `execution reverted` is the vault refusing to price: a stale round, or
+    # an oracle that has never published. Anything else is the network.
+    if grep -qi "revert" <<<"$ORACLE_ERR"; then
+      echo "  oracle          the vault REFUSED to price a share, so the pool"
+      echo "                  cannot be checked. A round older than MAX_STALENESS"
+      echo "                  does this; check the feed is publishing."
+      FAILED=1
+    else
+      echo "  oracle          could not be reached after 3 attempts, so the pool"
+      echo "                  price was NOT checked. This is the connection, not"
+      echo "                  the pool and not the oracle. Re-run."
+      echo "                  ${ORACLE_ERR%%$'\n'*}"
+      UNCHECKED=1
+    fi
     continue
   fi
 
@@ -118,9 +149,15 @@ PY
 done
 
 printf -- '----------------------------------------------------------\n'
-if [[ "$FAILED" == "0" ]]; then
-  echo "verify-pool: ok"
-else
+if [[ "$FAILED" != "0" ]]; then
   echo "verify-pool: problems above"
   exit 1
+elif [[ "$UNCHECKED" != "0" ]]; then
+  # Exit 2, not 0 and not 1: nothing is wrong with the pool and nothing was
+  # proved about it either. Saying "ok" here would be a claim this run cannot
+  # support.
+  echo "verify-pool: NOT fully checked - see above. Nothing failed; re-run."
+  exit 2
+else
+  echo "verify-pool: ok"
 fi
