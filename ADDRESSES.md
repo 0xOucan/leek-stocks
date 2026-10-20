@@ -248,12 +248,11 @@ against 0.01 BTC with 1798.873292 MUSD in the wallet:
 
 ## Ours
 
-Nothing is deployed yet. When it is, `script/DeployMezoTestnet.s.sol` prints
-every address; record them here with the date and the explorer link, and
-verify the sources on the explorer the same day.
-
-**Deployed to Mezo testnet (31611) on 2026-10-17**, settling in the
-**borrowable** MUSD (`0xf9BBcC…`), from `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45`.
+**Deployed to Mezo testnet (31611), redeployed 2026-10-18**, settling in the
+**borrowable** MUSD (`0xf9BBcC…`), from
+`0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45`. `script/DeployMezoTestnet.s.sol`
+prints every address and `scripts/record-deployment.sh` writes them into every
+tracked file, failing if a dead address survives anywhere.
 
 | Contract | Address | Explorer verification | Bytecode |
 |---|---|---|---|
@@ -264,11 +263,39 @@ verify the sources on the explorer the same day.
 | `ETFShare` GOLOGGLE | `0xa4220DF063149aa750bd54bEf578b244a3bc9Be7` | not indexed | matches |
 | `IssuanceVault` AMEZON | `0x4b6C535b6d298fB8a51E3577d7037340359d18E1` | not indexed | matches |
 | `ETFShare` AMEZON | `0x6c4A0dEcA88C51a27E91841E7017f1bE654769aD` | not indexed | matches |
+| `LeekStaking` | `0x6b15c487471CcE6A088D292A2f3834942a60e998` | not indexed | **not checked — see below** |
 
-Live state when recorded: GOLOGGLE oracle at round 1, answer `2e10` (200.00000000
-at 8 decimals); its vault prices a share at `200e18`; `feeBps` 50,
-`reserveShareBps` 5000, `coverageBps` 10000, reserves 0 because nobody has
-bought yet. `musd()` on both vaults returns `0xf9BBcC…`.
+**`LeekStaking` is the one contract `scripts/verify-bytecode.sh` does not
+cover.** The script compares `ETFFactory`, `IndexOracle`, `IssuanceVault` and
+`ETFShare` against a local build with immutables masked; staking was added
+later and no row was added with it. So "all seven match" is true of what the
+script checks and says nothing about the eighth. Extending it is open work, and
+until it is done the staking contract's bytecode is unverified by anything
+reproducible.
+
+Live state on 2026-10-19, read from the chain:
+
+| | GOLOGGLE | AMEZON |
+|---|---|---|
+| oracle round | 63 | 65 |
+| share price | 100.533727040 | 101.702366070 |
+| `coverageBps` | 10079 | 10281 |
+| pool | `0x98BA0742668a6C7fF29230E6774D8Cadb9749809` | `0xa450f99F527403C7d2381F0972A091f01e2E222F` |
+| pool depth | 3 sh / 295.470424740 MUSD | 3 sh / 305.107098210 MUSD |
+
+Both vaults have `feeBps` 50, `reserveShareBps` 5000, `maxShares` 1,000,000,
+and `musd()` returning `0xf9BBcC…`. `LeekStaking` holds 100 MEZO staked and has
+distributed 0.628499435100313500 MUSD; `feesAccrued` on the GOLOGGLE vault is
+**0.742388001859296482 MUSD**, which is fee revenue earned before anyone had
+staked and which `_routeRevenue` books permanently rather than stranding or
+gifting it.
+
+AMEZON's coverage is above 100% only because `fund()` put 10 MUSD in on
+2026-10-19: it had fallen to **9953** when the oracle rose after 3 shares were
+bought. That is audit finding H-1 on a live deployment, for the second time in
+two days. The pools are listed with `scripts/create-pool.sh` and checked with
+`scripts/verify-pool.sh`; both were seeded by one account at the oracle price
+and are 3 shares deep, which is too shallow to arbitrage.
 
 ### Keys, and what each one can do
 

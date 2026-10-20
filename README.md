@@ -29,9 +29,13 @@ oracles publishing, with the deploying key's `PUBLISHER_ROLE` renounced on
 both — so the key that deployed cannot walk the price.
 
 **Two things about the demo state, said here rather than implied by a number.**
-The GOLOGGLE/MUSD pool is **one account providing both sides** at the oracle
-price: it makes the pair tradeable and it is not organic depth. The trades that
-produced the staking revenue are **team-generated**, made to exercise the path.
+Both pools — GOLOGGLE/MUSD and AMEZON/MUSD — are **one account providing both
+sides** at the oracle price: they make the pairs tradeable and they are not
+organic depth. Each holds 3 shares, which is shallow enough that buying a single
+share moves the price by half, so the drift a pool shows against the oracle is
+mostly slippage and there is no arbitrage in it: the largest profitable trade
+against the GOLOGGLE pool today is **0.01 MUSD**. The trades that produced the
+staking revenue are **team-generated**, made to exercise the path.
 
 | Piece | State |
 |---|---|
